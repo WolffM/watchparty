@@ -1,0 +1,16 @@
+{
+  "name": "watchparty",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Watchparty server (Milestone 0 scaffolding)",
+  "scripts": {
+    "start": "node apps/watchparty-server/server.js",
+    "dev": "node apps/watchparty-server/server.js",
+    "test": "echo \"No tests yet (Milestone 0)\""
+  },
+  "dependencies": {
+    "express": "^4.19.2",
+    "ws": "^8.18.0"
+  }
+}

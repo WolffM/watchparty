@@ -1,0 +1,160 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Watchparty Admin</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <style>
+    :root { color-scheme: dark; }
+    body { font-family: system-ui, sans-serif; margin:0; background:#0f1114; color:#e6e6e6; }
+    header { padding:.75rem 1rem; background:#1f2329; font-weight:600; display:flex; align-items:center; gap:1rem; }
+    main { padding:1rem clamp(1rem,3vw,2rem); max-width:960px; margin:0 auto; }
+    fieldset { border:1px solid #333; border-radius:8px; padding:1rem 1.25rem; margin-bottom:1.25rem; }
+    legend { padding:0 .5rem; font-weight:600; }
+    label { display:flex; flex-direction:column; gap:.3rem; font-size:.8rem; text-transform:uppercase; letter-spacing:.05em; }
+    input, select, button { font:inherit; padding:.55rem .7rem; border-radius:6px; border:1px solid #333; background:#1d2127; color:#eee; }
+    button { cursor:pointer; border:1px solid #444; background:#27313d; transition:.15s background; }
+    button:hover { background:#324153; }
+    button:active { background:#3a4c61; }
+    .row { display:flex; flex-wrap:wrap; gap:.75rem; align-items:flex-end; }
+    .grow { flex:1 1 220px; }
+    #log { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; background:#121417; padding:.75rem 1rem; border:1px solid #252a31; border-radius:8px; min-height:120px; max-height:300px; overflow:auto; font-size:.75rem; line-height:1.2; }
+    .btn-group { display:flex; gap:.5rem; flex-wrap:wrap; }
+    .status-dot { width:.6rem; height:.6rem; border-radius:50%; background:#c33; display:inline-block; margin-right:.4rem; box-shadow:0 0 0 3px #1f2329; }
+    .status-ok { background:#2fa865; }
+    .small { font-size:.75rem; opacity:.7; }
+  </style>
+</head>
+<body>
+  <header>
+    <div>Watchparty Admin</div>
+    <div class="small">Milestone 3</div>
+  </header>
+  <main>
+    <fieldset>
+      <legend>Connection</legend>
+      <div class="row">
+        <label class="grow">Admin Key
+          <input id="adminKey" type="password" autocomplete="off" placeholder="Enter ADMIN_KEY" />
+        </label>
+        <button id="connectBtn" type="button">Connect WS</button>
+        <span id="wsStatus" class="small"><span class="status-dot" id="statusDot"></span><span id="statusText">disconnected</span></span>
+      </div>
+    </fieldset>
+    <fieldset>
+      <legend>Stage Media</legend>
+      <div class="row">
+        <label class="grow">File
+          <select id="fileSelect"></select>
+        </label>
+        <button id="refreshBtn" type="button">Refresh List</button>
+        <button id="stageBtn" type="button">Stage</button>
+      </div>
+      <div class="small" id="stagedInfo"></div>
+    </fieldset>
+    <fieldset>
+      <legend>Playback Control</legend>
+      <div class="btn-group">
+        <button data-cmd="play" type="button">Play</button>
+        <button data-cmd="pause" type="button">Pause</button>
+        <button id="seekBtn" type="button">Seek…</button>
+        <button id="setTimeBtn" type="button">SetTime</button>
+      </div>
+    </fieldset>
+    <fieldset>
+      <legend>Log</legend>
+      <div id="log"></div>
+    </fieldset>
+  </main>
+  <script>
+    const $ = sel => document.querySelector(sel);
+    const fileSelect = $('#fileSelect');
+    const logEl = $('#log');
+    const adminKeyInput = $('#adminKey');
+    const statusDot = $('#statusDot');
+    const statusText = $('#statusText');
+    let ws;
+    function log(msg){
+      const line = document.createElement('div');
+      line.textContent = '['+ new Date().toLocaleTimeString() +'] ' + msg;
+      logEl.appendChild(line);
+      logEl.scrollTop = logEl.scrollHeight;
+    }
+    async function loadMedia(){
+      fileSelect.innerHTML = '';
+      try {
+        const list = await fetch('/api/media').then(r=>r.json());
+        if (!Array.isArray(list) || !list.length){
+          fileSelect.innerHTML = '<option value="">(no media found)</option>';
+          return;
+        }
+        for (const f of list){
+          const opt = document.createElement('option');
+          opt.value = f; opt.textContent = f; fileSelect.appendChild(opt);
+        }
+      } catch(e){ log('Media list error: '+ e.message); }
+    }
+    async function refreshStaged(){
+      try {
+        const s = await fetch('/api/staged').then(r=>r.json());
+        if (s && s.etag){
+          $('#stagedInfo').textContent = `Staged: ${s.path} (etag ${s.etag.slice(0,8)}…)`;
+        } else { $('#stagedInfo').textContent = 'No file staged'; }
+      } catch{}
+    }
+    function setStatus(ok){
+      statusDot.classList.toggle('status-ok', !!ok);
+      statusText.textContent = ok ? 'connected' : 'disconnected';
+    }
+    function connect(){
+      if (ws && ws.readyState === WebSocket.OPEN) return;
+      const url = (location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host;
+      ws = new WebSocket(url);
+      ws.onopen = ()=>{ setStatus(true); log('WS connected'); };
+      ws.onclose = ()=>{ setStatus(false); log('WS closed'); };
+      ws.onmessage = ev => { log('WS <= '+ ev.data); };
+      ws.onerror = e => { log('WS error'); };
+    }
+    document.getElementById('connectBtn').addEventListener('click', connect);
+    document.getElementById('refreshBtn').addEventListener('click', loadMedia);
+    document.getElementById('stageBtn').addEventListener('click', async ()=>{
+      const path = fileSelect.value; const key = adminKeyInput.value.trim();
+      if (!path) return log('No file selected');
+      if (!key) return log('Enter admin key');
+      try {
+        const resp = await fetch('/api/stage',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({ path, key })}).then(r=>r.json());
+        if (resp && resp.ok){ log('Staged '+ path +' etag='+ resp.etag.slice(0,8)+'…'); refreshStaged(); if(ws && ws.readyState===1){ ws.send(JSON.stringify({cmd:'load', etag:resp.etag, key})); } }
+        else log('Stage failed: '+ JSON.stringify(resp));
+      } catch(e){ log('Stage error '+ e.message); }
+    });
+    document.querySelectorAll('[data-cmd]').forEach(btn => {
+      btn.addEventListener('click', ()=>{
+        const cmd = btn.dataset.cmd; const key = adminKeyInput.value.trim();
+        if (!key) return log('Enter admin key');
+        if (!ws || ws.readyState !== 1) return log('WS not connected');
+        ws.send(JSON.stringify({ cmd, key }));
+        log('WS => '+ cmd);
+      });
+    });
+    document.getElementById('seekBtn').addEventListener('click', ()=>{
+      const key = adminKeyInput.value.trim(); if(!key) return log('Enter admin key');
+      if (!ws || ws.readyState !== 1) return log('WS not connected');
+      const sec = prompt('Seek to seconds:'); if(sec==null) return;
+      const t = Number(sec); if(!isFinite(t)|| t<0) return log('Invalid time');
+      ws.send(JSON.stringify({ cmd:'seek', time:t, key }));
+      log('WS => seek '+ t);
+    });
+    document.getElementById('setTimeBtn').addEventListener('click', ()=>{
+      const key = adminKeyInput.value.trim(); if(!key) return log('Enter admin key');
+      if (!ws || ws.readyState !== 1) return log('WS not connected');
+      const sec = prompt('Set time (pause + seek to):'); if(sec==null) return;
+      const t = Number(sec); if(!isFinite(t)|| t<0) return log('Invalid time');
+      ws.send(JSON.stringify({ cmd:'pause', key }));
+      ws.send(JSON.stringify({ cmd:'seek', time:t, key }));
+      log('WS => pause + seek '+ t);
+    });
+    // Auto-init
+    loadMedia(); refreshStaged(); connect();
+  </script>
+</body>
+</html>

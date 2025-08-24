@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Watchparty Viewer</title>
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <style>
+      :root { color-scheme: dark; }
+      body { font-family: system-ui, sans-serif; margin: 0; background:#111; color:#eee; display:flex; flex-direction:column; min-height:100vh; text-size-adjust:100%; -webkit-text-size-adjust:100%; }
+      header { padding:0.75rem 1rem; background:#222; font-weight:600; }
+      main { flex:1; display:flex; align-items:center; justify-content:center; padding:1rem; position:relative; }
+      video { width: min(90vw, 1000px); max-height:75vh; background:#000; }
+      footer { font-size:0.75rem; text-align:center; padding:0.5rem; opacity:0.6; }
+  /* Removed loading popup overlay; rely on native player UI */
+    </style>
+  </head>
+  <body>
+  <header>Watchparty Viewer</header>
+    <main>
+  <video id="player" controls preload="metadata" src="" poster="" tabindex="0">
+        <p>Your browser does not support the HTML5 Video element.</p>
+      </video>
+    </main>
+  <footer>Prototype (Milestones 0–3 in progress)</footer>
+    <script>
+      const video = document.getElementById('player');
+      async function loadStaged(){
+        try {
+          const s = await fetch('/api/staged').then(r=>r.json());
+          if (s && s.etag){
+            video.src = '/media/current.mp4?v='+ encodeURIComponent(s.etag);
+            console.log('Loaded staged transcoded etag', s.etag);
+            return;
+          }
+          // Fallback: if symlink exists but no staged meta
+            const dbg = await fetch('/debug/link').then(r=>r.json()).catch(()=>null);
+            if (dbg && dbg.exists){
+              video.src = '/media/current.mp4';
+              console.log('Loaded fallback /media/current.mp4 (no staged metadata)');
+            } else {
+              console.log('No staged file and no symlink target.');
+            }
+        } catch (e){ console.warn('staged fetch failed', e); }
+      }
+      const ws = new WebSocket((location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host);
+      ws.onmessage = ev => {
+        try { const msg = JSON.parse(ev.data); if (msg.cmd==='load' && msg.etag){ video.src='/media/current.mp4?v='+encodeURIComponent(msg.etag); video.load(); } console.log('[WS]', msg); } catch {}
+      };
+      loadStaged();
+      // Error handler simplified: mp4/webm should play; if not, prompt admin.
+      video.addEventListener('error', () => {
+        console.warn('Playback failed. Ensure file was transcoded to mp4/webm.');
+      });
+    </script>
+  </body>
+</html>

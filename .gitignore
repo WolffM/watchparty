@@ -1,0 +1,14 @@
+# Node
+node_modules/
+npm-debug.log*
+
+# Environment / state
+state/staged.json
+
+# Media (do not commit large media assets)
+media/**
+
+# OS / editor
+*.DS_Store
+Thumbs.db
+.vscode/
