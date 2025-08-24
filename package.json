@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "Watchparty server (Milestone 0 scaffolding)",
+  "description": "Minimal video file server",
   "scripts": {
     "start": "node apps/watchparty-server/server.js",
     "dev": "node apps/watchparty-server/server.js",

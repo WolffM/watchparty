@@ -1,56 +1,177 @@
 <!doctype html>
 <html lang="en">
-  <head>
-    <meta charset="utf-8" />
-    <title>Watchparty Viewer</title>
-    <meta name="viewport" content="width=device-width,initial-scale=1" />
-    <style>
-      :root { color-scheme: dark; }
-      body { font-family: system-ui, sans-serif; margin: 0; background:#111; color:#eee; display:flex; flex-direction:column; min-height:100vh; text-size-adjust:100%; -webkit-text-size-adjust:100%; }
-      header { padding:0.75rem 1rem; background:#222; font-weight:600; }
-      main { flex:1; display:flex; align-items:center; justify-content:center; padding:1rem; position:relative; }
-      video { width: min(90vw, 1000px); max-height:75vh; background:#000; }
-      footer { font-size:0.75rem; text-align:center; padding:0.5rem; opacity:0.6; }
-  /* Removed loading popup overlay; rely on native player UI */
-    </style>
-  </head>
-  <body>
-  <header>Watchparty Viewer</header>
-    <main>
-  <video id="player" controls preload="metadata" src="" poster="" tabindex="0">
-        <p>Your browser does not support the HTML5 Video element.</p>
-      </video>
-    </main>
-  <footer>Prototype (Milestones 0–3 in progress)</footer>
-    <script>
-      const video = document.getElementById('player');
-      async function loadStaged(){
-        try {
-          const s = await fetch('/api/staged').then(r=>r.json());
-          if (s && s.etag){
-            video.src = '/media/current.mp4?v='+ encodeURIComponent(s.etag);
-            console.log('Loaded staged transcoded etag', s.etag);
-            return;
-          }
-          // Fallback: if symlink exists but no staged meta
-            const dbg = await fetch('/debug/link').then(r=>r.json()).catch(()=>null);
-            if (dbg && dbg.exists){
-              video.src = '/media/current.mp4';
-              console.log('Loaded fallback /media/current.mp4 (no staged metadata)');
-            } else {
-              console.log('No staged file and no symlink target.');
-            }
-        } catch (e){ console.warn('staged fetch failed', e); }
+<head>
+  <meta charset="utf-8" />
+  <title>Video</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <style>
+    :root { color-scheme: dark; }
+    body { margin:0; background:#000; display:flex; align-items:center; justify-content:center; min-height:100vh; font-family:system-ui,sans-serif; }
+    video { width:min(92vw,1000px); max-height:90vh; background:#000; }
+    h1 { position:absolute; top:0; left:0; font-size:0; }
+  </style>
+</head>
+<body>
+  <video id="player" src="/media/current.mp4" controls preload="metadata">
+    <p>Your browser does not support HTML5 video.</p>
+  </video>
+  <script>
+    // Append ?admin=dev (or your ADMIN_KEY) in one tab to control playback.
+  let ADMIN_KEY = new URLSearchParams(location.search).get('admin');
+  let isAdmin = !!ADMIN_KEY;
+    const video = document.getElementById('player');
+  // Viewer starts muted for autoplay policy; can unmute via custom controls.
+  if(!isAdmin) video.muted = true;
+  // Viewer: remove native controls & add minimal custom controls (fullscreen, PiP, mute, volume)
+    if(!isAdmin){
+      video.removeAttribute('controls');
+      const ctr = document.createElement('div');
+      ctr.style.cssText='position:fixed;bottom:12px;left:50%;transform:translateX(-50%);display:flex;gap:12px;align-items:center;background:rgba(0,0,0,.55);padding:6px 12px;border-radius:30px;font:12px system-ui;color:#fff;z-index:30;';
+      function mkBtn(label, title){ const b=document.createElement('button'); b.textContent=label; b.title=title||label; b.style.cssText='all:unset;cursor:pointer;padding:4px 10px;border-radius:20px;background:#222;color:#fff;font:12px system-ui;'; b.onmouseenter=()=>b.style.background='#333'; b.onmouseleave=()=>b.style.background='#222'; return b; }
+      const fsBtn = mkBtn('⛶','Fullscreen');
+      fsBtn.onclick=()=>{ if(document.fullscreenElement) document.exitFullscreen(); else video.requestFullscreen().catch(()=>{}); };
+      const popBtn = mkBtn('⇱','Picture in Picture');
+      popBtn.onclick=()=>{ if(document.pictureInPictureElement) document.exitPictureInPicture().catch(()=>{}); else if(video.requestPictureInPicture) video.requestPictureInPicture().catch(()=>{}); };
+      const volWrap=document.createElement('div'); volWrap.style.display='flex'; volWrap.style.alignItems='center'; volWrap.style.gap='4px';
+  const muteBtn = mkBtn('🔇','Mute / Unmute');
+  const volLabel=document.createElement('span'); volLabel.textContent='Vol'; volLabel.style.fontSize='12px';
+  const vol=document.createElement('input'); vol.type='range'; vol.min='0'; vol.max='1'; vol.step='0.01'; vol.value=video.volume; vol.style.width='90px';
+  vol.oninput=()=>{ video.volume=Number(vol.value); if(video.volume>0 && video.muted){ video.muted=false; updateMute(); } updateMute(); };
+  function updateMute(){ muteBtn.textContent = (video.muted || video.volume===0)?'🔇':'🔊'; }
+  muteBtn.onclick=()=>{ video.muted=!video.muted; if(!video.muted && video.volume===0){ video.volume=0.5; vol.value='0.5'; } updateMute(); };
+  updateMute();
+  volWrap.appendChild(muteBtn); volWrap.appendChild(volLabel); volWrap.appendChild(vol);
+  ctr.appendChild(fsBtn); ctr.appendChild(popBtn); ctr.appendChild(volWrap);
+      document.body.appendChild(ctr);
+      video.addEventListener('contextmenu', e=>e.preventDefault());
+      // Optionally prevent manual seeking via keyboard/mouse (native controls removed anyway)
+      video.addEventListener('seeking', ()=>{ if(lastState && Math.abs(video.currentTime - lastState.t) > 1){ suppress=true; video.currentTime = lastState.t; setTimeout(()=>suppress=false,40); } });
+    }
+    const ws = new WebSocket((location.protocol==='https:'?'wss://':'ws://')+location.host);
+    let suppress=false;
+    let lastState=null;
+  let initialSync=true;
+  let pendingTarget=null;
+  let joinStart=Date.now();
+  let latencyMs=0; // one-way estimate
+  let lastPingSent=0;
+  let playAttemptTs=0;
+  let playInFlight=false;
+    function log(...a){ console.log('[sync]', ...a); }
+    // UI overlays
+    const overlay = document.createElement('div');
+    overlay.style.cssText='position:fixed;top:6px;left:6px;font:12px system-ui;background:rgba(0,0,0,.55);color:#fff;padding:4px 8px;border-radius:6px;z-index:10;pointer-events:none;';
+    overlay.textContent='sync...';
+    document.body.appendChild(overlay);
+    let lastRev=null;
+    function applyState(s){
+      if(!s) return; lastState = s;
+      const now = Date.now();
+      let target = s.t;
+      if(!s.paused){
+        let delta = (now - s.ts - latencyMs)/1000; if(delta < 0) delta = 0; target += delta;
       }
-      const ws = new WebSocket((location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host);
-      ws.onmessage = ev => {
-        try { const msg = JSON.parse(ev.data); if (msg.cmd==='load' && msg.etag){ video.src='/media/current.mp4?v='+encodeURIComponent(msg.etag); video.load(); } console.log('[WS]', msg); } catch {}
-      };
-      loadStaged();
-      // Error handler simplified: mp4/webm should play; if not, prompt admin.
-      video.addEventListener('error', () => {
-        console.warn('Playback failed. Ensure file was transcoded to mp4/webm.');
+      const drift = video.currentTime - target;
+      overlay.textContent = (isAdmin?'[HOST] ':'') + (s.path||'') + '\n' + (s.paused?'paused':'playing') + ` t=${target.toFixed(2)} drift=${drift.toFixed(3)} lat=${latencyMs}ms`;
+      if (s.rev != null && s.rev !== lastRev) {
+        // media changed – reset join staging
+        lastRev = s.rev; initialSync=true; pendingTarget=null; joinStart=Date.now();
+        suppress=true; video.currentTime=0; video.src='/media/current.mp4?rev='+s.rev; video.load(); setTimeout(()=>suppress=false,150);
+        return; // wait for metadata before applying more
+      }
+      // Admin is authoritative: don't force drift corrections or playback state changes.
+      if (isAdmin) return;
+      // Stage initial seek until metadata ready (avoid AbortError / spam seeks)
+      if(!isAdmin && initialSync){
+        if(video.readyState < 1){ pendingTarget = target; return; }
+        if(pendingTarget != null){ suppress=true; video.currentTime = pendingTarget; pendingTarget=null; setTimeout(()=>suppress=false,60); }
+        // After first successful metadata seek mark sync complete (once we have some data)
+        if(video.readyState >= 2){ initialSync=false; }
+      }
+      // During first 2s after join allow larger drift tolerance
+      const age = Date.now()-joinStart;
+      const driftTolerance = age < 2000 ? 1.5 : 0.5;
+      if(video.readyState >= 2 && Math.abs(drift) > driftTolerance){
+        // Avoid early backward thrash (let decoder catch up if behind)
+        if(!(age < 2500 && drift < -0.6)){
+          suppress = true; video.currentTime = target; setTimeout(()=>suppress=false, 80); log('seek adjust, drift', drift.toFixed(3));
+        }
+      }
+      if(s.paused){
+        if(!video.paused){ suppress=true; video.pause(); setTimeout(()=>suppress=false,30); }
+      } else {
+        if(video.paused){ attemptAutoPlay(); }
+      }
+    }
+    function attemptAutoPlay(retries=3){
+      if(isAdmin) return; // admin handled natively
+      if(lastState?.paused) return;
+      const now = Date.now();
+      if(playInFlight || (now - playAttemptTs) < 900) return; // throttle attempts
+      playAttemptTs = now; playInFlight=true; suppress=true;
+      const p = video.play();
+      if(p && p.catch){
+        p.then(()=>{ playInFlight=false; setTimeout(()=>suppress=false,150); })
+         .catch(err=>{ playInFlight=false; log('play blocked', err?.name||err); if(err?.name==='NotAllowedError'){ showClickToStart(); } else if(retries>0){ setTimeout(()=>attemptAutoPlay(retries-1), 700); } setTimeout(()=>suppress=false,180); });
+      } else { playInFlight=false; setTimeout(()=>suppress=false,180); }
+    }
+    let clickOverlay=null;
+    function showClickToStart(){
+      if(clickOverlay) return;
+      clickOverlay=document.createElement('div');
+      clickOverlay.textContent='Click to start playback';
+      clickOverlay.style.cssText='position:fixed;inset:0;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,.6);color:#fff;font:20px system-ui;z-index:50;cursor:pointer;';
+      clickOverlay.onclick=()=>{ video.muted=true; attemptAutoPlay(); setTimeout(()=>{ if(!video.paused) { clickOverlay.remove(); clickOverlay=null; } },300); };
+      document.body.appendChild(clickOverlay);
+    }
+    video.addEventListener('loadedmetadata', ()=>{
+      if(pendingTarget != null){ suppress=true; video.currentTime=pendingTarget; pendingTarget=null; setTimeout(()=>suppress=false,60); }
+      if(!isAdmin && lastState && !lastState.paused){ attemptAutoPlay(); }
+    });
+  ws.onopen = ()=> { log('ws open'); schedulePing(); };
+  ws.onmessage = ev => { try { const msg=JSON.parse(ev.data); if(msg.type==='state'){ log('state', msg.data); applyState(msg.data);} else if(msg.type==='toast'){ showToast(msg.text||''); } else if(msg.type==='pong'){ const now=Date.now(); if(lastPingSent){ const rtt = now - lastPingSent; latencyMs = Math.max(0, Math.round(rtt/2)); } schedulePing(); } } catch(e){ log('bad msg', e); } };
+    ws.onclose = ()=> log('ws close');
+  function send(type, extra={}){ if(!isAdmin) return; if(ws.readyState!==1) return; const payload={ type, key:ADMIN_KEY, time: video.currentTime, ...extra }; log('send', payload); ws.send(JSON.stringify(payload)); }
+  function schedulePing(){ lastPingSent=Date.now(); if(ws.readyState===1){ ws.send(JSON.stringify({ type:'ping' })); } }
+    // Admin-originated events
+    video.addEventListener('play', ()=>{ if(!suppress) send('play'); });
+    video.addEventListener('pause', ()=>{ if(!suppress) send('pause'); });
+    let lastSeekSent=0; video.addEventListener('seeked', ()=>{ if(suppress||!isAdmin) return; const now=Date.now(); if(now-lastSeekSent>150){ send('seek'); lastSeekSent=now; } });
+    // Periodic drift correction (every 5s) for viewers
+  setInterval(()=>{ if(isAdmin) return; if(lastState) { log('periodic reapply'); applyState(lastState); } }, 5000);
+  // Admin periodic tick (position updates while playing)
+  setInterval(()=>{ if(!isAdmin) return; if(video.paused) return; send('tick'); }, 1000);
+  // Extra logging around play/pause events
+  video.addEventListener('timeupdate', ()=>{ if(isAdmin && !video.paused && ws.readyState===1) {/* light */} });
+  // Auto acquire admin key in dev mode
+  if(ADMIN_KEY === 'auto') {
+    fetch('/admin-key').then(r=>r.json()).then(d=>{ if(d.key){ ADMIN_KEY=d.key; isAdmin=true; log('auto admin key acquired'); } });
+  }
+  // Admin file picker
+  if(isAdmin){
+    const panel=document.createElement('div');
+    panel.style.cssText='position:fixed;right:6px;top:6px;max-height:60vh;overflow:auto;background:rgba(0,0,0,.65);padding:6px 8px;border-radius:6px;font:12px system-ui;z-index:20;';
+    panel.textContent='loading files...';
+    document.body.appendChild(panel);
+    fetch('/api/files').then(r=>r.json()).then(list=>{
+      panel.textContent='';
+      list.forEach(f=>{
+        const a=document.createElement('div');
+        a.textContent=f; a.style.cursor='pointer'; a.style.padding='2px 4px';
+        a.onclick=()=>{ send('load',{ path:f }); };
+        a.onmouseenter=()=>a.style.background='#222';
+        a.onmouseleave=()=>a.style.background='transparent';
+        panel.appendChild(a);
       });
-    </script>
-  </body>
+      if(!list.length) panel.textContent='(no files)';
+    }).catch(e=>panel.textContent='error listing files');
+  }
+  // Toast utility
+  function showToast(text){ if(!text) return; const t=document.createElement('div'); t.textContent=text; t.style.cssText='position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);background:rgba(0,0,0,.75);color:#fff;padding:10px 16px;font:14px system-ui;border-radius:8px;z-index:40;opacity:0;transition:opacity .2s'; document.body.appendChild(t); requestAnimationFrame(()=>t.style.opacity='1'); setTimeout(()=>{ t.style.opacity='0'; setTimeout(()=>t.remove(),400); },2200); }
+
+  // Viewer spacebar -> pause request to admin
+  document.addEventListener('keydown', e=>{ if(!isAdmin && (e.code==='Space' || e.key===' ')){ if(document.activeElement===video || document.activeElement===document.body){ e.preventDefault(); if(ws.readyState===1){ ws.send(JSON.stringify({ type:'request', action:'pause' })); showToast('Pause requested'); } } } });
+
+  </script>
+</body>
 </html>

@@ -1,0 +1,84 @@
+13:37:32.955 [sync] ws open localhost:3000:59:33
+13:37:32.956 [sync] state 
+Object { t: 0, paused: true, ts: 1756067842212, rev: 0, path: "anime/[Erai-raws] Sousou no Frieren - 01 [1080p][HEVC][D187670F].wp.mp4" }
+localhost:3000:59:33
+13:37:33.020 [sync] auto admin key acquired localhost:3000:59:33
+13:37:37.228 [sync] state 
+Object { t: 0, paused: true, ts: 1756067842212, rev: 0, path: "anime/[Erai-raws] Sousou no Frieren - 01 [1080p][HEVC][D187670F].wp.mp4" }
+localhost:3000:59:33
+13:37:40.002 [sync] send 
+Object { type: "play", key: "35ea5e7dcbcf490ab4db7a98681e7b20", time: 0 }
+localhost:3000:59:33
+13:37:40.006 [sync] state 
+Object { t: 0, paused: false, ts: 1756067860003, rev: 0, path: "anime/[Erai-raws] Sousou no Frieren - 01 [1080p][HEVC][D187670F].wp.mp4" }
+localhost:3000:59:33
+13:37:40.268
+GET
+http://localhost:3000/media/current.mp4?rev=0
+[HTTP/1.1 206 Partial Content nullms]
+
+13:37:40.991 [sync] send 
+Object { type: "tick", key: "35ea5e7dcbcf490ab4db7a98681e7b20", time: 0.818434 }
+localhost:3000:59:33
+13:37:40.994 [sync] state 
+Object { t: 0.818434, paused: false, ts: 1756067860991, rev: 0, path: "anime/[Erai-raws] Sousou no Frieren - 01 [1080p][HEVC][D187670F].wp.mp4" }
+localhost:3000:59:33
+13:37:42.005 [sync] send 
+Object { type: "tick", key: "35ea5e7dcbcf490ab4db7a98681e7b20", time: 1.802561 }
+localhost:3000:59:33
+13:37:42.007 [sync] state 
+Object { t: 1.802561, paused: false, ts: 1756067862005, rev: 0, path: "anime/[Erai-raws] Sousou no Frieren - 01 [1080p][HEVC][D187670F].wp.mp4" }
+localhost:3000:59:33
+13:37:42.228 [sync] state 
+Object { t: 1.802561, paused: false, ts: 1756067862005, rev: 0, path: "anime/[Erai-raws] Sousou no Frieren - 01 [1080p][HEVC][D187670F].wp.mp4" }
+localhost:3000:59:33
+13:37:43.006 [sync] send 
+Object { type: "tick", key: "35ea5e7dcbcf490ab4db7a98681e7b20", time: 2.833264 }
+localhost:3000:59:33
+13:37:43.009 [sync] state 
+Object { t: 2.833264, paused: false, ts: 1756067863007, rev: 0, path: "anime/[Erai-raws] Sousou no Frieren - 01 [1080p][HEVC][D187670F].wp.mp4" }
+localhost:3000:59:33
+13:37:44.020 [sync] send 
+Object { type: "tick", key: "35ea5e7dcbcf490ab4db7a98681e7b20", time: 3.818139 }
+localhost:3000:59:33
+13:37:44.022 [sync] state 
+Object { t: 3.818139, paused: false, ts: 1756067864021, rev: 0, path: "anime/[Erai-raws] Sousou no Frieren - 01 [1080p][HEVC][D187670F].wp.mp4" }
+localhost:3000:59:33
+13:37:45.044 [sync] send 
+Object { type: "tick", key: "35ea5e7dcbcf490ab4db7a98681e7b20", time: 4.85535 }
+localhost:3000:59:33
+13:37:45.045 [sync] state 
+Object { t: 4.85535, paused: false, ts: 1756067865044, rev: 0, path: "anime/[Erai-raws] Sousou no Frieren - 01 [1080p][HEVC][D187670F].wp.mp4" }
+localhost:3000:59:33
+13:37:46.050 [sync] send 
+Object { type: "tick", key: "35ea5e7dcbcf490ab4db7a98681e7b20", time: 5.84569 }
+localhost:3000:59:33
+13:37:46.051 [sync] state 
+Object { t: 5.84569, paused: false, ts: 1756067866050, rev: 0, path: "anime/[Erai-raws] Sousou no Frieren - 01 [1080p][HEVC][D187670F].wp.mp4" }
+localhost:3000:59:33
+13:37:47.057 [sync] send 
+Object { type: "tick", key: "35ea5e7dcbcf490ab4db7a98681e7b20", time: 6.883967 }
+localhost:3000:59:33
+13:37:47.059 [sync] state 
+Object { t: 6.883967, paused: false, ts: 1756067867057, rev: 0, path: "anime/[Erai-raws] Sousou no Frieren - 01 [1080p][HEVC][D187670F].wp.mp4" }
+localhost:3000:59:33
+13:37:47.238 [sync] state 
+Object { t: 6.883967, paused: false, ts: 1756067867057, rev: 0, path: "anime/[Erai-raws] Sousou no Frieren - 01 [1080p][HEVC][D187670F].wp.mp4" }
+localhost:3000:59:33
+13:37:47.931 [sync] send 
+Object { type: "pause", key: "35ea5e7dcbcf490ab4db7a98681e7b20", time: 7.731722 }
+localhost:3000:59:33
+13:37:47.943 [sync] state 
+Object { t: 7.731722, paused: true, ts: 1756067867934, rev: 0, path: "anime/[Erai-raws] Sousou no Frieren - 01 [1080p][HEVC][D187670F].wp.mp4" }
+localhost:3000:59:33
+13:37:52.227 [sync] state 
+Object { t: 7.731722, paused: true, ts: 1756067867934, rev: 0, path: "anime/[Erai-raws] Sousou no Frieren - 01 [1080p][HEVC][D187670F].wp.mp4" }
+localhost:3000:59:33
+13:37:57.229 [sync] state 
+Object { t: 7.731722, paused: true, ts: 1756067867934, rev: 0, path: "anime/[Erai-raws] Sousou no Frieren - 01 [1080p][HEVC][D187670F].wp.mp4" }
+localhost:3000:59:33
+13:38:02.530 [sync] state 
+Object { t: 7.731722, paused: true, ts: 1756067867934, rev: 0, path: "anime/[Erai-raws] Sousou no Frieren - 01 [1080p][HEVC][D187670F].wp.mp4" }
+localhost:3000:59:33
+13:38:07.243 [sync] state 
+Object { t: 7.731722, paused: true, ts: 1756067867934, rev: 0, path: "anime/[Erai-raws] Sousou no Frieren - 01 [1080p][HEVC][D187670F].wp.mp4" }

@@ -3,7 +3,7 @@ node_modules/
 npm-debug.log*
 
 # Environment / state
-state/staged.json
+state/**
 
 # Media (do not commit large media assets)
 media/**
@@ -12,3 +12,4 @@ media/**
 *.DS_Store
 Thumbs.db
 .vscode/
+.env

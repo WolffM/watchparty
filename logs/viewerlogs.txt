@@ -1,0 +1,65 @@
+13:37:30.192 [sync] ws open localhost:3000:59:33
+13:37:30.192 [sync] state 
+Object { t: 0, paused: true, ts: 1756067842212, rev: 0, path: "anime/[Erai-raws] Sousou no Frieren - 01 [1080p][HEVC][D187670F].wp.mp4" }
+localhost:3000:59:33
+13:37:32.228 [sync] state 
+Object { t: 0, paused: true, ts: 1756067842212, rev: 0, path: "anime/[Erai-raws] Sousou no Frieren - 01 [1080p][HEVC][D187670F].wp.mp4" }
+localhost:3000:59:33
+13:37:35.173 [sync] periodic reapply localhost:3000:59:33
+13:37:35.498
+Error in parsing value for ‘-webkit-text-size-adjust’.  Declaration dropped. localhost:3000:1:1266
+13:37:35.499 Unknown pseudo-class or pseudo-element ‘-ms-clear’.  Ruleset ignored due to bad selector. localhost:3000:1:30443
+13:37:35.499
+Error in parsing value for ‘-webkit-text-size-adjust’.  Declaration dropped. localhost:3000:1:91023
+13:37:37.228 [sync] state 
+Object { t: 0, paused: true, ts: 1756067842212, rev: 0, path: "anime/[Erai-raws] Sousou no Frieren - 01 [1080p][HEVC][D187670F].wp.mp4" }
+localhost:3000:59:33
+13:37:40.006 [sync] state 
+Object { t: 0, paused: false, ts: 1756067860003, rev: 0, path: "anime/[Erai-raws] Sousou no Frieren - 01 [1080p][HEVC][D187670F].wp.mp4" }
+localhost:3000:59:33
+13:37:40.177 [sync] periodic reapply localhost:3000:59:33
+13:37:40.994 [sync] state 
+Object { t: 0.818434, paused: false, ts: 1756067860991, rev: 0, path: "anime/[Erai-raws] Sousou no Frieren - 01 [1080p][HEVC][D187670F].wp.mp4" }
+localhost:3000:59:33
+13:37:42.007 [sync] state 
+Object { t: 1.802561, paused: false, ts: 1756067862005, rev: 0, path: "anime/[Erai-raws] Sousou no Frieren - 01 [1080p][HEVC][D187670F].wp.mp4" }
+localhost:3000:59:33
+13:37:42.008 [sync] seek adjust, drift -0.825 localhost:3000:59:33
+13:37:42.239 [sync] state 
+Object { t: 1.802561, paused: false, ts: 1756067862005, rev: 0, path: "anime/[Erai-raws] Sousou no Frieren - 01 [1080p][HEVC][D187670F].wp.mp4" }
+localhost:3000:59:33
+13:37:42.240 [sync] play blocked AbortError localhost:3000:59:33
+13:37:43.009 [sync] state 
+Object { t: 2.833264, paused: false, ts: 1756067863007, rev: 0, path: "anime/[Erai-raws] Sousou no Frieren - 01 [1080p][HEVC][D187670F].wp.mp4" }
+localhost:3000:59:33
+13:37:44.022 [sync] state 
+Object { t: 3.818139, paused: false, ts: 1756067864021, rev: 0, path: "anime/[Erai-raws] Sousou no Frieren - 01 [1080p][HEVC][D187670F].wp.mp4" }
+localhost:3000:59:33
+13:37:45.046 [sync] state 
+Object { t: 4.85535, paused: false, ts: 1756067865044, rev: 0, path: "anime/[Erai-raws] Sousou no Frieren - 01 [1080p][HEVC][D187670F].wp.mp4" }
+localhost:3000:59:33
+13:37:45.047 [sync] play blocked AbortError localhost:3000:59:33
+13:37:45.188 [sync] periodic reapply localhost:3000:59:33
+13:37:46.052 [sync] state 
+Object { t: 5.84569, paused: false, ts: 1756067866050, rev: 0, path: "anime/[Erai-raws] Sousou no Frieren - 01 [1080p][HEVC][D187670F].wp.mp4" }
+localhost:3000:59:33
+13:37:46.053 [sync] play blocked AbortError localhost:3000:59:33
+13:37:47.059 [sync] state 
+Object { t: 6.883967, paused: false, ts: 1756067867057, rev: 0, path: "anime/[Erai-raws] Sousou no Frieren - 01 [1080p][HEVC][D187670F].wp.mp4" }
+localhost:3000:59:33
+13:37:47.060 [sync] play blocked AbortError localhost:3000:59:33
+13:37:47.238 [sync] state 
+Object { t: 6.883967, paused: false, ts: 1756067867057, rev: 0, path: "anime/[Erai-raws] Sousou no Frieren - 01 [1080p][HEVC][D187670F].wp.mp4" }
+localhost:3000:59:33
+13:37:47.943 [sync] state 
+Object { t: 7.731722, paused: true, ts: 1756067867934, rev: 0, path: "anime/[Erai-raws] Sousou no Frieren - 01 [1080p][HEVC][D187670F].wp.mp4" }
+localhost:3000:59:33
+13:37:50.188 [sync] periodic reapply localhost:3000:59:33
+13:37:52.228 [sync] state 
+Object { t: 7.731722, paused: true, ts: 1756067867934, rev: 0, path: "anime/[Erai-raws] Sousou no Frieren - 01 [1080p][HEVC][D187670F].wp.mp4" }
+localhost:3000:59:33
+13:37:55.193 [sync] periodic reapply localhost:3000:59:33
+13:37:57.229 [sync] state 
+Object { t: 7.731722, paused: true, ts: 1756067867934, rev: 0, path: "anime/[Erai-raws] Sousou no Frieren - 01 [1080p][HEVC][D187670F].wp.mp4" }
+localhost:3000:59:33
+13:38:00.206 [sync] periodic reapply
