@@ -325,7 +325,7 @@
         </div>
       </form>
     </aside>
-  </div>
+    </div>
   <!-- chatExpand button removed; handled via control bar toggle -->
   <script>
     // Visit /admin?admin=YOURKEY in one tab to control playback (viewer tabs use /).
@@ -334,7 +334,7 @@
     let isAdmin = (location.pathname.startsWith('/admin')) && !!ADMIN_KEY; // only treat as admin on /admin path
     const VERBOSE = params.has('verbose');
   if (isAdmin) { document.body.classList.add('is-admin'); }
-    const video = document.getElementById('player');
+  const video = document.getElementById('player');
   // IMPORTANT: Viewer must start muted for autoplay without user gesture (Chrome/Edge policy).
   // This line was removed earlier, causing NotAllowedError and blocked playback. Restored now.
   if(!isAdmin){
@@ -427,6 +427,8 @@
     // Home (no media) UI helpers
     let noMediaGlobal = true; // start with no media loaded
     let homeSelectEl = null;
+  // Ensure viewer sees starfield immediately (hide empty video element until media provided)
+  if(!isAdmin){ try { video.style.display='none'; } catch {} }
     function ensureHomeSelect() {
       if (homeSelectEl || !isAdmin) return;
       homeSelectEl = document.createElement('button');
@@ -730,7 +732,15 @@
       // Optionally prevent manual seeking via keyboard/mouse (native controls removed anyway)
       video.addEventListener('seeking', () => { if (!isAdmin && lastState && Math.abs(video.currentTime - lastState.t) > 1) { suppress = true; video.currentTime = lastState.t; setTimeout(() => suppress = false, 40); } });
     })();
-    const ws = new WebSocket((location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + `/?admin=${encodeURIComponent(ADMIN_KEY || '')}`);
+    let ws = null;
+    function createSocket(){
+      const base = (location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host;
+      const url = base + `/?admin=${encodeURIComponent(ADMIN_KEY||'')}`;
+      ws = new WebSocket(url);
+      ws.onopen = () => { log('ws open'); schedulePing(); };
+      ws.onclose = () => log('ws close');
+      ws.onmessage = wsMessage;
+    }
     let suppress = false;
     let lastState = null;
     let initialSync = true;
@@ -847,7 +857,6 @@
       if (!isAdmin && lastState && !lastState.paused) ensureViewerPlaying();
       if(!subsEnabled) scheduleAutoSubs(3);
     });
-    ws.onopen = () => { log('ws open'); schedulePing(); };
     // Removed separate collapse/expand buttons; control bar button handles it
     let chatAutoScroll = true;
     function esc(t) { return t.replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "\"": "&quot;", "'": "&#39;" }[c])); }
@@ -949,16 +958,14 @@
         }
       });
     }
-    chatForm.addEventListener('submit', e => {
-      e.preventDefault(); const t = chatInput.value.trim(); if (!t || ws.readyState !== 1) return; ws.send(JSON.stringify({ type: 'chat', text: t })); chatInput.value = '';
-    });
+  chatForm.addEventListener('submit', e => { e.preventDefault(); const t = chatInput.value.trim(); if (!t || !ws || ws.readyState !== 1) return; ws.send(JSON.stringify({ type: 'chat', text: t })); chatInput.value = ''; });
     function collapseChat() { chatPanel.classList.add('collapsed'); localStorage.chatCollapsed = '1'; }
     function expandChat() { chatPanel.classList.remove('collapsed'); localStorage.chatCollapsed = '0'; setTimeout(() => { chatMessages.scrollTop = chatMessages.scrollHeight; chatAutoScroll = true; }, 50); }
     if (localStorage.chatCollapsed === '1') { collapseChat(); }
     updateFloatingVisibility();
     // Chat toggle after initial state
     setTimeout(() => { const btn = document.getElementById('customCtr')?.querySelector('button:last-child'); updateChatToggle(); }, 0);
-    ws.onmessage = ev => { try { const msg = JSON.parse(ev.data); if (msg.type === 'state') { log('state', msg.data); applyState(msg.data); } else if (msg.type === 'toast') { if (msg.text === 'Pause requested' && !isAdmin) { /* suppress viewer toast */ } else { showToast(msg.text || ''); } } else if (msg.type === 'pong') { const now = Date.now(); if (lastPingSent) { const rtt = now - lastPingSent; latencyMs = Math.max(0, Math.round(rtt / 2)); } schedulePing(); } else if (msg.type === 'presence') { setUsers(msg.users); } else if (msg.type === 'chat-history') { msg.items.forEach(it => { if (it.type === 'chat') { appendChat(it); pushFloatingChat(it); } else if (it.type === 'system') appendSystem(it); }); } else if (msg.type === 'chat') { appendChat(msg); pushFloatingChat(msg); } else if (msg.type === 'system') { appendSystem(msg); } else if (msg.type === 'self') { appendSelfNotice(msg.id, msg.name, msg.color); currentSelf = msg; refreshNameButton(); } else if (msg.type === 'rename-result') { console.log('[rename-result]', msg); if (msg.ok) { showToast('Name updated'); } else { if (msg.reason === 'in-use') showToast('Color in use'); else if (msg.reason === 'unchanged') showToast('No change'); else showToast('Rename failed'); } } } catch (e) { log('bad msg', e); } };
+  function wsMessage(ev){ try { const msg = JSON.parse(ev.data); if (msg.type === 'state') { log('state', msg.data); applyState(msg.data); } else if (msg.type === 'toast') { if (msg.text === 'Pause requested' && !isAdmin) { /* suppress viewer toast */ } else { showToast(msg.text || ''); } } else if (msg.type === 'pong') { const now = Date.now(); if (lastPingSent) { const rtt = now - lastPingSent; latencyMs = Math.max(0, Math.round(rtt / 2)); } schedulePing(); } else if (msg.type === 'presence') { setUsers(msg.users); } else if (msg.type === 'chat-history') { msg.items.forEach(it => { if (it.type === 'chat') { appendChat(it); pushFloatingChat(it); } else if (it.type === 'system') appendSystem(it); }); } else if (msg.type === 'chat') { appendChat(msg); pushFloatingChat(msg); } else if (msg.type === 'system') { appendSystem(msg); } else if (msg.type === 'self') { appendSelfNotice(msg.id, msg.name, msg.color); currentSelf = msg; refreshNameButton(); } else if (msg.type === 'rename-result') { console.log('[rename-result]', msg); if (msg.ok) { showToast('Name updated'); } else { if (msg.reason === 'in-use') showToast('Color in use'); else if (msg.reason === 'unchanged') showToast('No change'); else showToast('Rename failed'); } } } catch (e) { log('bad msg', e); } }
 
     // Rename popup UI
     // currentSelf already declared earlier
@@ -988,8 +995,8 @@
       form.addEventListener('submit', e => { e.preventDefault(); console.log('[rename-popup] submit'); const fd = new FormData(form); const color = fd.get('color'); console.log('[rename-popup] selected', color); if (color && ws.readyState === 1) { console.log('[rename-popup] sending rename'); ws.send(JSON.stringify({ type: 'rename', color })); } else { console.log('[rename-popup] not sent (missing color or ws not open)'); } wrap.remove(); });
     }
     renameBtn.onclick = () => openRename();
-    ws.onclose = () => log('ws close');
-    function send(type, extra = {}) { if (!isAdmin) return; if (ws.readyState !== 1) return; const payload = { type, key: ADMIN_KEY, time: video.currentTime, ...extra }; log('send', payload); ws.send(JSON.stringify(payload)); }
+  // (duplicate onclose assignment removed – handled in createSocket)
+  function send(type, extra = {}) { if (!isAdmin) return; if (!ws || ws.readyState !== 1) return; const payload = { type, key: ADMIN_KEY, time: video.currentTime, ...extra }; log('send', payload); ws.send(JSON.stringify(payload)); }
     function schedulePing() { lastPingSent = Date.now(); if (ws.readyState === 1) { ws.send(JSON.stringify({ type: 'ping' })); } }
     // Admin-originated events
     video.addEventListener('play', () => { if (!suppress) send('play'); });
@@ -1069,7 +1076,10 @@
     updateFloatingVisibility();
 
     // Viewer spacebar -> pause request to admin
-    document.addEventListener('keydown', e => { if (!isAdmin && (e.code === 'Space' || e.key === ' ')) { if (document.activeElement === video || document.activeElement === document.body) { e.preventDefault(); if (ws.readyState === 1) { ws.send(JSON.stringify({ type: 'request', action: 'pause' })); showToast('Pause requested'); } } } });
+  document.addEventListener('keydown', e => { if (!isAdmin && (e.code === 'Space' || e.key === ' ')) { if (document.activeElement === video || document.activeElement === document.body) { e.preventDefault(); if (ws && ws.readyState === 1) { ws.send(JSON.stringify({ type: 'request', action: 'pause' })); showToast('Pause requested'); } } } });
+    
+  // Immediate socket connect (server already enforced access gate)
+  createSocket();
 
   </script>
 </body>

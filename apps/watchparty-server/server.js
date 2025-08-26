@@ -271,7 +271,31 @@ function authGate(req, res, next){
   const supplied = req.query.admin;
   if (supplied === ADMIN_KEY || supplied === 'auto') return next();
   const wanted = req.path === '/' ? '/' : req.path;
-  res.status(401).send(`<!doctype html><html><head><meta charset=utf-8><title>Locked</title><style>body{font-family:system-ui;background:#111;color:#eee;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0}form{background:#1e1e1e;padding:24px 28px;border-radius:12px;box-shadow:0 4px 18px rgba(0,0,0,.5);display:flex;flex-direction:column;gap:12px;min-width:300px}input{padding:8px 10px;border-radius:6px;border:1px solid #333;background:#222;color:#eee;font:14px system-ui}button{all:unset;background:#2962ff;color:#fff;padding:10px 14px;border-radius:6px;cursor:pointer;font-weight:600;text-align:center}button:hover{background:#1c4fc1}</style></head><body><form onsubmit="var k=document.getElementById('k').value.trim(); if(k){var extra=location.search.includes('verbose')?'&verbose':''; location.href='${wanted}?admin='+encodeURIComponent(k)+extra;} return false"><h2 style=margin:0;font:18px system-ui>Enter Access Key</h2><p style=margin:0;font:12px system-ui;opacity:.75>Key required to join session.</p><input id=k placeholder="Access key" autofocus autocomplete=off><div style=display:flex;gap:8px><button type=submit style=flex:1>Enter</button></div><p style=margin:4px 0 0;font:11px system-ui;opacity:.55>Provide the key to viewers.</p></form></body></html>`);
+  // Inline starfield so animation is visible BEFORE key entry.
+  res.status(401).send(`<!doctype html><html><head><meta charset=utf-8><title>Enter Access Key</title><style>
+  :root{color-scheme:dark}
+  body{font-family:system-ui,Segoe UI,Roboto,sans-serif;position:relative;margin:0;min-height:100vh;background:#000;color:#e6e6e6;display:flex;align-items:center;justify-content:center;overflow:hidden}
+  #sf{position:absolute;inset:0;width:100%;height:100%;display:block;background:#000}
+  form{position:relative;z-index:2;background:#121519;padding:24px 28px 28px;border-radius:14px;box-shadow:0 4px 28px -4px rgba(0,0,0,.7);display:flex;flex-direction:column;gap:12px;min-width:300px;border:1px solid #1e242b}
+  h2{margin:0;font:600 18px system-ui;letter-spacing:.3px}
+  p{margin:0}
+  .sub{font:12px system-ui;opacity:.75}
+  input{padding:10px 12px;border-radius:8px;border:1px solid #2a333c;background:#0d1115;color:#e6e6e6;font:14px system-ui;outline:none}
+  input:focus{border-color:#347fd9}
+  button{all:unset;background:#2e78d2;color:#fff;padding:12px 16px;border-radius:10px;cursor:pointer;font:600 14px system-ui;text-align:center;letter-spacing:.3px}
+  button:hover{background:#296bc0}
+  .hint{margin:4px 0 0;font:11px system-ui;opacity:.55}
+  </style></head><body>
+  <canvas id=sf></canvas>
+  <form onsubmit="var k=document.getElementById('k').value.trim(); if(k){var extra=location.search.includes('verbose')?'&verbose':''; location.href='${wanted}?admin='+encodeURIComponent(k)+extra;} return false">
+    <h2>Enter Access Key</h2>
+    <p class=sub>Key required to join session.</p>
+    <input id=k placeholder='Access key' autofocus autocomplete=off spellcheck=false>
+    <button type=submit>Enter</button>
+    <p class=hint>Provide the key to viewers.</p>
+  </form>
+  <script>(function(){var c=document.getElementById('sf');if(!c)return;var ctx=c.getContext('2d');function rs(){c.width=innerWidth;c.height=innerHeight;}addEventListener('resize',rs);rs();var stars=[];var N=Math.min(1400,Math.floor(c.width*c.height/2400));for(var i=0;i<N;i++){stars.push({x:Math.random()*2-1,y:Math.random()*2-1,z:Math.random(),s:0.00018+Math.random()*0.00042});}var last=0;function step(ts){if(!last)last=ts;var dt=Math.min(60,ts-last);last=ts;ctx.fillStyle='#000';ctx.fillRect(0,0,c.width,c.height);var w=c.width,h=c.height,cx=w/2,cy=h/2;for(var s of stars){s.z-=s.s*dt;if(s.z<=0.0005){s.x=Math.random()*2-1;s.y=Math.random()*2-1;s.z=1;}var k=1/s.z,px=s.x*k*cx+cx,py=s.y*k*cy+cy;if(px>=0&&px<w&&py>=0&&py<h){var r=Math.max(.4,1.7*(1-s.z));ctx.fillStyle='rgba(255,255,255,'+(1.15*(1-s.z)).toFixed(3)+')';ctx.beginPath();ctx.arc(px,py,r,0,6.283);ctx.fill();}}requestAnimationFrame(step);}requestAnimationFrame(step);})();</script>
+  </body></html>`);
 }
 app.get(['/', '/index.html'], authGate, (req,res)=> res.sendFile(path.join(publicDir,'index.html')));
 app.get(['/admin','/admin.html'], authGate, (req,res)=> res.sendFile(path.join(publicDir,'index.html')));
