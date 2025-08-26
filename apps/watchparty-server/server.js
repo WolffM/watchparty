@@ -12,10 +12,10 @@ const server = http.createServer(app);
 const wss = new WebSocketServer({ server });
 
 // Simple in-memory session state
-let mediaFile = null;      // absolute path to current media
-let mediaRel = null;       // relative path under media root
+let mediaFile = null;      // absolute path to current media (null until admin selects)
+let mediaRel = null;       // relative path under media root (null means no media loaded yet)
 let mediaRev = 0;          // incremented when media changes
-let lastBroadcast = { t: 0, paused: true, ts: Date.now(), rev: mediaRev, path: mediaRel }; // t seconds into media
+let lastBroadcast = { t: 0, paused: true, ts: Date.now(), rev: mediaRev, path: mediaRel }; // initial home state
 const ADMIN_KEY = process.env.ADMIN_KEY || 'dev';
 
 // Chat / Presence data structures (character slots in assignment order)
@@ -157,6 +157,15 @@ wss.on('connection', (socket, req) => {
       broadcastState();
       return;
     }
+    if (type === 'unload') {
+      if (msg.key !== ADMIN_KEY) { console.log('[ws] auth fail unload', msg.key); return; }
+      if (!mediaFile && !mediaRel) { return; } // already at home
+      mediaFile = null; mediaRel = null; mediaRev++;
+      console.log('[ws] unload -> home');
+      lastBroadcast = { t:0, paused:true, ts:Date.now(), rev: mediaRev, path: null };
+      broadcastState();
+      return;
+    }
     if (!mediaFile) return; // below commands need media
     if (['play','pause','seek','tick'].includes(type)) {
       if (msg.key !== ADMIN_KEY) { console.log('[ws] auth fail', type, 'supplied=', msg.key); return; }
@@ -253,8 +262,8 @@ function resolveMedia(rel){
   if (!(lower.endsWith('.wp.mp4') || lower.endsWith('.webm'))) return null;
   return { rel: norm, abs };
 }
-mediaFile = findFirst();
-if (mediaFile) { mediaRel = path.relative(mediaRoot, mediaFile).replace(/\\/g,'/'); lastBroadcast.path = mediaRel; console.log('[media] using', mediaRel); } else { console.log('[media] no playable file found'); }
+// Startup: DO NOT auto-load first media; begin on "home" (starfield) until admin selects a file.
+console.log('[media] starting with no media loaded (home screen)');
 
 // Auth gate for index: require ?admin=KEY (or ?admin=auto in non-prod) even for viewer mode
 const publicDir = path.join(__dirname, 'public');
