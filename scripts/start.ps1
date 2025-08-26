@@ -88,15 +88,18 @@ else {
 
 # --- Library Verification & Bootstrap Transcode ---
 $mediaRoot = Join-Path $repoRoot 'media'
+$outputRoot = Join-Path $mediaRoot 'output'
+if (-not (Test-Path $outputRoot)) { try { New-Item -ItemType Directory -Path $outputRoot | Out-Null } catch {} }
 if (-not (Test-Path $mediaRoot)) { New-Item -ItemType Directory -Path $mediaRoot | Out-Null }
 
 function Get-PlayableFiles {
-  Get-ChildItem -Path $mediaRoot -Recurse -File -ErrorAction SilentlyContinue | Where-Object { $_.Name.ToLower().EndsWith('.wp.mp4') -or $_.Name.ToLower().EndsWith('.webm') }
+  if (-not (Test-Path $outputRoot)) { return @() }
+  Get-ChildItem -Path $outputRoot -Recurse -File -ErrorAction SilentlyContinue | Where-Object { $_.Name.ToLower().EndsWith('.wp.mp4') -or $_.Name.ToLower().EndsWith('.webm') }
 }
 function Get-FirstSourceMedia {
-  $mkv = Get-ChildItem -Path $mediaRoot -Recurse -File -Include *.mkv -ErrorAction SilentlyContinue | Select-Object -First 1
+  $mkv = Get-ChildItem -Path $mediaRoot -Recurse -File -Include *.mkv -ErrorAction SilentlyContinue | Where-Object { -not $_.FullName.StartsWith($outputRoot) } | Select-Object -First 1
   if ($mkv) { return $mkv }
-  $rawMp4 = Get-ChildItem -Path $mediaRoot -Recurse -File -Include *.mp4 -ErrorAction SilentlyContinue | Where-Object { -not $_.Name.ToLower().EndsWith('.wp.mp4') } | Select-Object -First 1
+  $rawMp4 = Get-ChildItem -Path $mediaRoot -Recurse -File -Include *.mp4 -ErrorAction SilentlyContinue | Where-Object { -not $_.Name.ToLower().EndsWith('.wp.mp4') -and -not $_.FullName.StartsWith($outputRoot) } | Select-Object -First 1
   return $rawMp4
 }
 $playable = Get-PlayableFiles
@@ -108,8 +111,9 @@ if (-not $playable -or $playable.Count -eq 0) {
       Write-Host "ffmpeg not found. Cannot transcode. Install ffmpeg or add a playable file." -ForegroundColor Red
       exit 1
     }
-    $base = if ($firstSrc.Name.ToLower().EndsWith('.mkv')) { $firstSrc.FullName -replace '\\.mkv$','' } elseif ($firstSrc.Name.ToLower().EndsWith('.mp4')) { $firstSrc.FullName -replace '\\.mp4$','' } else { $firstSrc.FullName }
-    $outPath = $base + '.wp.mp4'
+  $isMkv = $firstSrc.Name.ToLower().EndsWith('.mkv')
+  $baseName = if ($isMkv) { [IO.Path]::GetFileNameWithoutExtension($firstSrc.Name) } elseif ($firstSrc.Name.ToLower().EndsWith('.mp4')) { ($firstSrc.Name -replace '\\.mp4$','') } else { [IO.Path]::GetFileNameWithoutExtension($firstSrc.Name) }
+  $outPath = Join-Path $outputRoot ($baseName + '.wp.mp4')
     if (-not (Test-Path $outPath)) {
       Write-Host "Transcoding: $($firstSrc.Name) -> $(Split-Path -Leaf $outPath)" -ForegroundColor Cyan
   # Force 8-bit yuv420p output (hardware/browser friendly) regardless of 10-bit source
@@ -118,6 +122,19 @@ if (-not $playable -or $playable.Count -eq 0) {
       if ($LASTEXITCODE -ne 0 -or -not (Test-Path $outPath)) {
         Write-Host "Bootstrap transcode failed." -ForegroundColor Red
         exit 1
+      }
+      # Attempt subtitle extraction for MKV (first subtitle stream) -> WebVTT
+      if ($isMkv) {
+        $vttPath = Join-Path $outputRoot ($baseName + '.vtt')
+        if (-not (Test-Path $vttPath)) {
+          if (-not $Quiet) { Write-Host "Extracting first subtitle track -> $(Split-Path -Leaf $vttPath)" -ForegroundColor DarkCyan }
+          try {
+            & ffmpeg -y -i $firstSrc.FullName -map 0:s:0 -c:s webvtt $vttPath 2>$null
+            if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $vttPath)) {
+              if (-not $Quiet) { Write-Host "(No subtitle stream or extraction failed)" -ForegroundColor DarkYellow }
+            }
+          } catch { if (-not $Quiet) { Write-Host "(Subtitle extraction error: $($_.Exception.Message))" -ForegroundColor DarkYellow } }
+        }
       }
     }
     $playable = Get-PlayableFiles
@@ -150,7 +167,7 @@ if (-not $existing) {
 
 if ($NoTunnel) {
   if (-not $Quiet) { Write-Host "Tunnel disabled (-NoTunnel)." -ForegroundColor Yellow }
-  Write-Host "Local Admin URL: http://localhost:$($env:PORT)/?admin=$($env:ADMIN_KEY)" -ForegroundColor Cyan
+  Write-Host "Local Admin URL: http://localhost:$($env:PORT)/admin?admin=$($env:ADMIN_KEY)" -ForegroundColor Cyan
   Write-Host "Viewer URL:      http://localhost:$($env:PORT)/" -ForegroundColor Cyan
   if ($serverProc) { Write-Host "Press Ctrl+C to end this wrapper (server continues) or stop PID $($serverProc.Id)." -ForegroundColor DarkGray; Wait-Process -Id $serverProc.Id }
   else { Write-Host "Existing server in use; this wrapper will now wait (Ctrl+C to exit)." -ForegroundColor DarkGray; while ($true) { Start-Sleep -Seconds 3600 } }
@@ -160,7 +177,7 @@ if ($NoTunnel) {
 
 if (-not (Get-Command cloudflared -ErrorAction SilentlyContinue)) {
   Write-Host "cloudflared not found. Install it or use -NoTunnel to skip." -ForegroundColor Yellow
-  Write-Host "Local Admin URL: http://localhost:$($env:PORT)/?admin=$($env:ADMIN_KEY)" -ForegroundColor Cyan
+  Write-Host "Local Admin URL: http://localhost:$($env:PORT)/admin?admin=$($env:ADMIN_KEY)" -ForegroundColor Cyan
   Write-Host "Viewer URL:      http://localhost:$($env:PORT)/" -ForegroundColor Cyan
   if ($serverProc) { Wait-Process -Id $serverProc.Id } else { while ($true) { Start-Sleep -Seconds 3600 } }
   exit 0
@@ -195,13 +212,13 @@ if ($BackgroundTunnel) {
     if (-not $tunnelUrl) { Start-Sleep -Milliseconds 300 }
   }
   if ($tunnelUrl) {
-    Write-Host "`n=== TUNNEL READY ===" -ForegroundColor Cyan
-    Write-Host "Public Viewer URL: $tunnelUrl" -ForegroundColor Green
-    Write-Host "Admin Control URL: $tunnelUrl/?admin=$($env:ADMIN_KEY)" -ForegroundColor Green
+  Write-Host "\n=== TUNNEL READY ===" -ForegroundColor Cyan
+  Write-Host "Public Viewer URL: $tunnelUrl" -ForegroundColor Green
+  Write-Host "Admin Control URL: $tunnelUrl/admin?admin=$($env:ADMIN_KEY)" -ForegroundColor Green
     try { Set-Content -Path (Join-Path $stateDir 'tunnel.latest.txt') -Value $tunnelUrl -NoNewline -ErrorAction SilentlyContinue } catch {}
   } else { Write-Host "(Background mode) Did not capture tunnel URL yet; tail logs in $tunnelLogDir" -ForegroundColor Yellow }
   Write-Host "Local Viewer URL:  http://localhost:$($env:PORT)/" -ForegroundColor DarkCyan
-  Write-Host "Local Admin URL:   http://localhost:$($env:PORT)/?admin=$($env:ADMIN_KEY)" -ForegroundColor DarkCyan
+  Write-Host "Local Admin URL:   http://localhost:$($env:PORT)/admin?admin=$($env:ADMIN_KEY)" -ForegroundColor DarkCyan
   Write-Host "Press Ctrl+C to stop (server keeps running)." -ForegroundColor DarkGray
   if ($cloudflaredProc) { try { while (-not $cloudflaredProc.HasExited) { Start-Sleep -Seconds 2 } } catch {} }
   if ($serverProc -and -not $serverProc.HasExited) { Write-Host "Server still running: http://localhost:$($env:PORT)/ (PID $($serverProc.Id))" -ForegroundColor DarkGray }
@@ -210,7 +227,7 @@ if ($BackgroundTunnel) {
 
 if (-not $Quiet) { Write-Host "Launching Cloudflare quick tunnel (inline mode)..." -ForegroundColor Yellow }
 Write-Host "Local Viewer URL:  http://localhost:$($env:PORT)/" -ForegroundColor DarkCyan
-Write-Host "Local Admin URL:   http://localhost:$($env:PORT)/?admin=$($env:ADMIN_KEY)" -ForegroundColor DarkCyan
+Write-Host "Local Admin URL:   http://localhost:$($env:PORT)/admin?admin=$($env:ADMIN_KEY)" -ForegroundColor DarkCyan
 
 $regex = [regex]'https://[a-z0-9-]+\.trycloudflare\.com'
 $tunnelPrinted = $false
@@ -223,7 +240,7 @@ try {
         $url = $m.Value
         Write-Host "`n=== TUNNEL READY ===" -ForegroundColor Cyan
         Write-Host "Public Viewer URL: $url" -ForegroundColor Green
-        Write-Host "Admin Control URL: $url/?admin=$($env:ADMIN_KEY)" -ForegroundColor Green
+  Write-Host "Admin Control URL: $url/admin?admin=$($env:ADMIN_KEY)" -ForegroundColor Green
         try { Set-Content -Path (Join-Path $stateDir 'tunnel.latest.txt') -Value $url -NoNewline -ErrorAction SilentlyContinue } catch {}
         $tunnelPrinted = $true
       }

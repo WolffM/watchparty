@@ -16,9 +16,9 @@ Optional env vars before running:
   $env:ADMIN_KEY     Provide explicit admin key (else autogen)
 
 Security note:
-  Anyone with the admin key query (?admin=KEY) can control playback.
+  Anyone with the admin key query (?admin=KEY) can control playback (only when visiting the /admin path).
   When using a public tunnel DO NOT expose /admin-key (works only in non-production anyway) —
-  just share the base URL to viewers (without ?admin=) and keep the admin key private.
+  share only the base viewer URL and keep the /admin URL with the key private.
 #>
 Param(
   [int] $PreferredPort = 3000,
@@ -92,8 +92,8 @@ $tunnelUrl = $null
   if (-not $tunnelUrl -and $_ -match 'https://[a-z0-9-]+\.trycloudflare\.com') {
     $tunnelUrl = $Matches[0]
     Write-Host "\n=== TUNNEL READY ===" -ForegroundColor Cyan
-    Write-Host "Public URL (viewer):    $tunnelUrl" -ForegroundColor Green
-    Write-Host "Admin URL (control):    $tunnelUrl/?admin=$($env:ADMIN_KEY)" -ForegroundColor Green
+  Write-Host "Public URL (viewer):    $tunnelUrl" -ForegroundColor Green
+  Write-Host "Admin URL (control):    $tunnelUrl/admin?admin=$($env:ADMIN_KEY)" -ForegroundColor Green
     Write-Host "(Keep admin key private; only share viewer URL)" -ForegroundColor DarkGray
     Write-Host "Press Ctrl+C to stop tunnel (server keeps running if started earlier)." -ForegroundColor DarkGray
   }
