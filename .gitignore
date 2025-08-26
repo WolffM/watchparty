@@ -13,3 +13,5 @@ media/**
 Thumbs.db
 .vscode/
 .env
+
+admin.key
