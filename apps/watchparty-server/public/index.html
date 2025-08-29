@@ -441,16 +441,14 @@
     // Starfield home screen (visible when no media loaded yet)
     const starCanvas = document.createElement('canvas');
     starCanvas.id = 'starfield';
-  starCanvas.style.cssText = 'position:absolute;inset:0;width:100%;height:100%;display:block;background:#000;z-index:0;opacity:1;transition:opacity .5s;';
+    starCanvas.style.cssText = 'position:absolute;inset:0;width:100%;height:100%;display:block;background:#000;z-index:0;opacity:1;transition:opacity .5s;';
     videoWrap.insertBefore(starCanvas, videoWrap.firstChild);
     const ctx = starCanvas.getContext('2d');
-    let stars = []; let starAnimId = null; let lastStarTs = 0;
+    let stars = []; let starAnimId = null; let lastStarTs = 0; let starfieldActive = false;
     function initStars() {
       const count = Math.min(1600, Math.floor(starCanvas.width * starCanvas.height / 2200));
       stars = Array.from({ length: count }, () => ({
         x: (Math.random() * 2 - 1), y: (Math.random() * 2 - 1), z: (Math.random()), pz: 1,
-        // Starfield speed slowed by ~50% (previous: 0.00045 + rand*0.0012)
-        // Previously halved. Further slow by ~40% (multiply by 0.6) per request.
         speed: (0.000135 + Math.random() * 0.00036)
       }));
     }
@@ -470,14 +468,25 @@
         ctx.fillStyle = 'rgba(255,255,255,' + alpha.toFixed(3) + ')';
         ctx.beginPath(); ctx.arc(px, py, r, 0, Math.PI * 2); ctx.fill();
       }
-      starAnimId = requestAnimationFrame(stepStars);
+      if (starfieldActive) starAnimId = requestAnimationFrame(stepStars);
     }
     function startStarfield() {
-      if (!starAnimId) { starAnimId = requestAnimationFrame(stepStars); }
+      if (starfieldActive) return; // already running
+      starfieldActive = true;
+      if (!starAnimId) starAnimId = requestAnimationFrame(stepStars);
       starCanvas.style.display = 'block';
-      requestAnimationFrame(()=>{ starCanvas.style.opacity = '1'; });
+      requestAnimationFrame(() => { starCanvas.style.opacity = '1'; });
+      console.log('[starfield] start');
     }
-    function stopStarfield() { if (starAnimId) { cancelAnimationFrame(starAnimId); starAnimId = null; } starCanvas.style.opacity='0'; setTimeout(()=>{ if(!starAnimId) starCanvas.style.display='none'; }, 520); }
+    function stopStarfield() {
+      if (!starfieldActive) return; // already stopped
+      starfieldActive = false;
+      if (starAnimId) { cancelAnimationFrame(starAnimId); starAnimId = null; }
+      starCanvas.style.opacity = '0';
+      setTimeout(() => { if (!starfieldActive) starCanvas.style.display = 'none'; }, 520);
+      console.log('[starfield] stop');
+    }
+    // Start immediately on initial home screen
     startStarfield();
     // Home (no media) UI helpers
     let noMediaGlobal = true; // start with no media loaded
@@ -960,7 +969,7 @@
       const base = (location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host;
       const url = base + `/?admin=${encodeURIComponent(ADMIN_KEY||'')}`;
       ws = new WebSocket(url);
-      ws.onopen = () => { log('ws open'); schedulePing(); };
+  ws.onopen = () => { log('ws open'); pingLoop(); };
       ws.onclose = () => log('ws close');
       ws.onmessage = wsMessage;
     }
@@ -994,7 +1003,7 @@
     if(p && p.catch){ p.catch(e=>{ telem.playErrors++; if(e && e.name==='NotAllowedError') telem.notAllowed++; }); }
   }
   function applyState(s) {
-      if (!s) return; lastState = s;
+      if (!s) return; const prev = lastState; lastState = s;
       const now = Date.now();
       let target = s.t;
       if (!s.paused) {
@@ -1003,30 +1012,44 @@
       const drift = video.currentTime - target;
       const noMedia = !s.path;
       if (noMedia) {
-        if (!noMediaGlobal) { noMediaGlobal = true; }
-    // Starfield will start after exit wipe completes (handled in triggerWipeExit callback below)
+        const wasPlayingMedia = !noMediaGlobal; // transition from media -> home
+        if (!noMediaGlobal) noMediaGlobal = true;
         if (typeof hideCtr === 'function') hideCtr();
         if (isAdmin) { ensureHomeSelect(); if (homeSelectEl) homeSelectEl.style.display = 'inline-flex'; }
-        // Hide video element to reveal starfield fully
         if (video) {
-          // animate exit if currently showing a path
-      if(video.style.display !== 'none' && lastState && lastState.path){
-        // Begin starfield behind video before collapsing so wipe reveals it
-        if (typeof startStarfield==='function') startStarfield();
-        triggerWipeExit(()=>{ try { video.pause(); video.style.display='none'; } catch{}; });
-          } else { video.pause(); video.style.display='none'; }
+          if (wasPlayingMedia) {
+            // Begin starfield behind video before collapsing so wipe reveals it
+            if (typeof startStarfield === 'function') startStarfield();
+            // Defer src unload until after wipe completes to preserve last frame during animation
+            triggerWipeExit(() => {
+              try {
+                video.pause();
+                video.removeAttribute('src');
+                video.load();
+                video.style.display = 'none';
+              } catch { }
+            });
+          } else {
+            // Initial home load, no exit animation needed; safe to clear immediately
+            if (typeof startStarfield === 'function') startStarfield();
+            try {
+              video.pause();
+              video.removeAttribute('src');
+              video.load();
+              video.style.display = 'none';
+            } catch { }
+          }
         }
       } else {
-  const wasHome = noMediaGlobal;
-  if (noMediaGlobal) { noMediaGlobal = false; }
-  stopStarfield();
-  if (homeSelectEl) homeSelectEl.style.display = 'none';
-  // Only auto-show controls once when leaving home screen; afterward rely on hover inside video area.
-  if (wasHome && typeof showCtr === 'function') showCtr();
-  if (video) {
-    const needAnim = wasHome;
-    if(needAnim) { triggerWipeEnter(); } else { video.style.display='block'; }
-  }
+        const wasHome = noMediaGlobal;
+        if (noMediaGlobal) noMediaGlobal = false;
+        if (wasHome) stopStarfield(); // only stop when actually leaving home
+        if (homeSelectEl) homeSelectEl.style.display = 'none';
+        if (wasHome && typeof showCtr === 'function') showCtr();
+        if (video) {
+          if (wasHome) { triggerWipeEnter(); }
+          video.style.display = 'block';
+        }
       }
       if (VERBOSE) {
         overlay.textContent = (isAdmin ? '[HOST] ' : '') + (s.path || '') + '\n' + (s.paused ? 'paused' : 'playing') + ` t=${target.toFixed(2)} drift=${drift.toFixed(3)} lat=${latencyMs}ms`;
@@ -1042,15 +1065,15 @@
         lastRev = s.rev; initialSync = true; pendingTarget = null; joinStart = Date.now();
         try { if (window.resetMediaUi) window.resetMediaUi(); } catch { }
         try { updateMediaTitle(s.path); } catch { }
-  if (s.path) {
+        if (s.path) {
           // New media selected
           suppress = true; video.currentTime = 0; video.src = '/media/current.mp4?rev=' + s.rev; video.load(); setTimeout(() => suppress = false, 150);
-          triggerWipeEnter();
+          // Wipe enter only if coming from home
+          if (noMediaGlobal) triggerWipeEnter();
           // Attempt to auto-enable subtitles with retries
           autoSubsAttempted=false; scheduleAutoSubs(5);
         } else {
-          // Unloaded -> home; clear src to avoid 404 black overlay
-          triggerWipeExit(()=>{ try { video.removeAttribute('src'); video.load(); } catch { } });
+          // Unloaded -> home; src removal & animation handled in main noMedia branch above
         }
         return; // wait for metadata before applying more
       }
@@ -1234,6 +1257,13 @@
   // (duplicate onclose assignment removed – handled in createSocket)
   function send(type, extra = {}) { if (!isAdmin) return; if (!ws || ws.readyState !== 1) return; const payload = { type, key: ADMIN_KEY, time: video.currentTime, ...extra }; log('send', payload); ws.send(JSON.stringify(payload)); }
     function schedulePing() { lastPingSent = Date.now(); if (ws.readyState === 1) { ws.send(JSON.stringify({ type: 'ping' })); } }
+    function schedulePing() { lastPingSent = Date.now(); if (ws.readyState === 1) { ws.send(JSON.stringify({ type: 'ping' })); } }
+    function pingLoop(){
+      if (!ws) return;
+      if (ws.readyState === 1) schedulePing();
+      setTimeout(pingLoop, 5000);
+    }
+  function wsMessage(ev){ try { const msg = JSON.parse(ev.data); if (msg.type === 'state') { log('state', msg.data); applyState(msg.data); } else if (msg.type === 'toast') { if (msg.text === 'Pause requested' && !isAdmin) { /* suppress viewer toast */ } else { showToast(msg.text || ''); } } else if (msg.type === 'pong') { const now = Date.now(); if (lastPingSent) { const rtt = now - lastPingSent; latencyMs = Math.max(0, Math.round(rtt / 2)); log('pong rtt', rtt, 'lat', latencyMs); } } else if (msg.type === 'presence') { setUsers(msg.users); } else if (msg.type === 'chat-history') { msg.items.forEach(it => { if (it.type === 'chat') { appendChat(it); pushFloatingChat(it); } else if (it.type === 'system') appendSystem(it); }); } else if (msg.type === 'chat') { appendChat(msg); pushFloatingChat(msg); } else if (msg.type === 'system') { appendSystem(msg); } else if (msg.type === 'self') { appendSelfNotice(msg.id, msg.name, msg.color); currentSelf = msg; refreshNameButton(); } else if (msg.type === 'rename-result') { console.log('[rename-result]', msg); if (msg.ok) { showToast('Name updated'); } else { if (msg.reason === 'in-use') showToast('Color in use'); else if (msg.reason === 'unchanged') showToast('No change'); else showToast('Rename failed'); } } } catch (e) { log('bad msg', e); } }
     // Admin-originated events
     video.addEventListener('play', () => { if (!suppress) send('play'); });
     video.addEventListener('pause', () => { if (!suppress) send('pause'); });
@@ -1313,6 +1343,8 @@
 
     // Viewer spacebar -> pause request to admin
   document.addEventListener('keydown', e => { if (!isAdmin && (e.code === 'Space' || e.key === ' ')) { if (document.activeElement === video || document.activeElement === document.body) { e.preventDefault(); if (ws && ws.readyState === 1) { ws.send(JSON.stringify({ type: 'request', action: 'pause' })); showToast('Pause requested'); } } } });
+  // Visibility handling: send a ping when returning to foreground to refresh lastSeen and avoid timeout
+  document.addEventListener('visibilitychange', ()=>{ if (!document.hidden) { if (ws && ws.readyState===1) { ws.send(JSON.stringify({ type:'ping', vis:true })); } } });
     
   // Immediate socket connect (server already enforced access gate)
   createSocket();

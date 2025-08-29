@@ -39,7 +39,8 @@ let nextClientId = 1;
 const chatHistory = []; // ring buffer of { type:'chat', id,name,color,text,ts }
 const CHAT_HISTORY_LIMIT = 200;
 const CHAT_HISTORY_SEND = 100;
-const PRESENCE_TIMEOUT_MS = 25000;
+// Presence timeout (extend slightly while debugging unexpected disconnects)
+const PRESENCE_TIMEOUT_MS = 40000;
 const PRESENCE_SWEEP_INTERVAL = 10000;
 const CHAT_RATE_MAX = 5; // messages
 const CHAT_RATE_WINDOW_MS = 5000; // time window
@@ -114,7 +115,8 @@ wss.on('connection', (socket, req) => {
     meta.lastSeen = now;
     switch(msg.type){
       case 'ping':
-        // presence updated above
+        // Presence updated above; respond with pong so client can schedule next ping
+        try { socket.send(JSON.stringify({ type:'pong', ts: now })); } catch {}
         break;
       case 'chat': {
         const text = (msg.text||'').toString().slice(0,500).trim();
@@ -184,10 +186,15 @@ wss.on('connection', (socket, req) => {
         break; }
     }
   });
-  socket.on('close', ()=> console.log('[ws] client closed'));
-  socket.on('close', ()=>{
+  socket.on('close', (code, reasonBuf)=>{
+    let reason = '';
+    try { if (reasonBuf) reason = reasonBuf.toString(); } catch {}
+    console.log('[ws] client closed', meta.id, 'code=', code, 'reason=', reason);
     const m = clientMeta.get(socket);
     if (m) { pushSystem((m.color? m.color: ('anon'+m.id)) + ' left'); releaseColor(m.color); clientMeta.delete(socket); broadcastPresence(); }
+  });
+  socket.on('error', err => {
+    console.warn('[ws] client error', meta.id, err?.message);
   });
 });
 
@@ -198,7 +205,9 @@ setInterval(()=>{ if (!mediaFile) return; broadcastState(); }, 5000);
 setInterval(()=>{
   let changed=false; const now=Date.now();
   for (const [sock, meta] of [...clientMeta.entries()]) {
-    if (now - meta.lastSeen > PRESENCE_TIMEOUT_MS) {
+    const idle = now - meta.lastSeen;
+    if (idle > PRESENCE_TIMEOUT_MS) {
+      console.warn('[presence] timing out client', meta.id, 'idle', idle);
       pushSystem((meta.color? meta.color: ('anon'+meta.id)) + ' left');
       releaseColor(meta.color); clientMeta.delete(sock); try { sock.close(4000,'timeout'); } catch {}
       changed=true;
@@ -211,6 +220,19 @@ function broadcastState(){
   const payload = JSON.stringify({ type:'state', data: lastBroadcast });
   for (const c of wss.clients) { if (c.readyState === 1) c.send(payload); }
 }
+
+// Lightweight telemetry endpoints for debugging client disconnects
+app.get('/api/debug/clients', (_req,res)=>{
+  const now = Date.now();
+  const clients = [];
+  for (const [sock, meta] of clientMeta.entries()) {
+    clients.push({ id: meta.id, color: meta.color, isAdmin: !!meta.isAdmin, idleMs: now - meta.lastSeen });
+  }
+  res.json({ count: clients.length, clients });
+});
+app.get('/api/debug/state', (_req,res)=>{
+  res.json({ lastBroadcast, mediaFile: mediaFile? path.relative(process.cwd(), mediaFile): null, rev: mediaRev });
+});
 
 // Locate first playable file (prefer *.wp.mp4 then .webm) or use MEDIA_FILE env.
 const ROOT = process.cwd();
