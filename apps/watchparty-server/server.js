@@ -4,6 +4,7 @@ import fs from 'fs';
 import { fileURLToPath } from 'url';
 import http from 'http';
 import { WebSocketServer } from 'ws';
+import { spawnSync } from 'child_process';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -62,6 +63,17 @@ function pushSystem(text){
   const msg = { type:'system', text, ts: now };
   pushChat(msg);
 }
+function pushSystemAdmin(text){
+  const now = Date.now();
+  const msg = { type:'system', text, ts: now };
+  // deliver only to admin clients
+  for (const [sock, meta] of clientMeta.entries()) {
+    if (sock.readyState === 1 && meta && meta.isAdmin) {
+      try { sock.send(JSON.stringify(msg)); } catch {}
+    }
+  }
+  // Do NOT store in global chat history for viewers; admins will still see it within their session
+}
 function sendSelf(socket, meta){
   try { socket.send(JSON.stringify({ type:'self', id: meta.id, name: meta.color? meta.color: 'anon'+meta.id, color: meta.color })); } catch {}
 }
@@ -83,7 +95,8 @@ wss.on('connection', (socket, req) => {
       return;
     }
   } catch {}
-  const meta = { id: nextClientId++, color: assignColor(), lastSeen: Date.now(), msgTimes: [] };
+  const isAdminClient = req.url.startsWith('/admin');
+  const meta = { id: nextClientId++, color: assignColor(), lastSeen: Date.now(), msgTimes: [], isAdmin: isAdminClient };
   clientMeta.set(socket, meta);
   console.log('[ws] client connected', meta.id, 'color=', meta.color);
   socket.send(JSON.stringify({ type: 'state', data: lastBroadcast }));
@@ -93,109 +106,85 @@ wss.on('connection', (socket, req) => {
   // System join message (broadcast) & self-only notice
   pushSystem((meta.color? meta.color : ('anon'+meta.id)) + ' joined');
   sendSelf(socket, meta);
-  socket.on('close', ()=> console.log('[ws] client closed'));
-  socket.on('message', (data) => {
+  // Message handler (playback sync, chat, media selection, presence ping)
+  socket.on('message', data => {
     let msg; try { msg = JSON.parse(data.toString()); } catch { return; }
-    if (!msg || typeof msg !== 'object') return;
-    const { type } = msg;
-    if (type === 'ping') { socket.send(JSON.stringify({ type:'pong', at: Date.now() })); const m = clientMeta.get(socket); if (m) m.lastSeen = Date.now(); return; }
-    if (type === 'chat') {
-      const m = clientMeta.get(socket); if(!m) return;
-      m.lastSeen = Date.now();
-      let text = ''+ (msg.text||'');
-      text = text.replace(/\r/g,'').replace(/\n/g,' ').trim();
-      if(!text) return;
-      if (text.length > 300) text = text.slice(0,300);
-      // Rate limit
-      const now = Date.now();
-      m.msgTimes = m.msgTimes.filter(t => now - t < CHAT_RATE_WINDOW_MS);
-      if (m.msgTimes.length >= CHAT_RATE_MAX) { return; }
-      m.msgTimes.push(now);
-      const name = m.color ? m.color : ('anon'+m.id);
-      const out = { type:'chat', id: m.id, name, color: m.color, text, ts: now };
-      pushChat(out);
-      return;
-    }
-    if (type === 'rename') {
-  let want = (msg.color||'').toLowerCase();
-  if (want === 'ubel') want = 'übel';
-  if (!COLOR_PALETTE.includes(want)) { try { socket.send(JSON.stringify({ type:'rename-result', ok:false, reason:'invalid' })); } catch {} return; }
-  const m = clientMeta.get(socket); if(!m) { try { socket.send(JSON.stringify({ type:'rename-result', ok:false, reason:'no-meta' })); } catch {} return; }
-      m.lastSeen = Date.now();
-  if (m.color === want) { try { socket.send(JSON.stringify({ type:'rename-result', ok:false, reason:'unchanged' })); } catch {} return; }
-  // Check if in use by someone else
-  for (const meta2 of clientMeta.values()) { if (meta2 !== m && meta2.color === want) { try { socket.send(JSON.stringify({ type:'rename-result', ok:false, reason:'in-use' })); } catch {} return; } }
-      const oldName = m.color ? m.color : ('anon'+m.id);
-      colorsAvailable = colorsAvailable.filter(c=>c!==want); // remove desired from pool if present
-      releaseColor(m.color); // put old back into pool
-      m.color = want;
-      const newName = m.color ? m.color : ('anon'+m.id);
-      pushSystem(`${oldName} → ${newName}`);
-      broadcastPresence();
-      sendSelf(socket, m);
-  try { socket.send(JSON.stringify({ type:'rename-result', ok:true, color: want })); } catch {}
-      return;
-    }
-    // Viewer -> Admin lightweight requests (no admin key required)
-    if (type === 'request') {
-      if (msg.action === 'pause') {
-        console.log('[ws] viewer pause request');
-        const payload = JSON.stringify({ type:'toast', text:'Pause requested' });
-        for (const c of wss.clients) { if (c.readyState === 1) c.send(payload); }
-      }
-      return;
-    }
-    if (type === 'load') {
-      if (msg.key !== ADMIN_KEY) { console.log('[ws] auth fail load', msg.key); return; }
-      const rel = msg.path;
-      if (typeof rel !== 'string') return;
-      const safe = resolveMedia(rel);
-      if (!safe) { console.log('[ws] invalid load path', rel); return; }
-      mediaFile = safe.abs; mediaRel = safe.rel; mediaRev++;
-      console.log('[ws] load', mediaRel);
-      lastBroadcast = { t:0, paused:true, ts:Date.now(), rev: mediaRev, path: mediaRel };
-      broadcastState();
-      return;
-    }
-    if (type === 'unload') {
-      if (msg.key !== ADMIN_KEY) { console.log('[ws] auth fail unload', msg.key); return; }
-      if (!mediaFile && !mediaRel) { return; } // already at home
-      mediaFile = null; mediaRel = null; mediaRev++;
-      console.log('[ws] unload -> home');
-      lastBroadcast = { t:0, paused:true, ts:Date.now(), rev: mediaRev, path: null };
-      broadcastState();
-      return;
-    }
-    if (!mediaFile) return; // below commands need media
-    if (['play','pause','seek','tick'].includes(type)) {
-      if (msg.key !== ADMIN_KEY) { console.log('[ws] auth fail', type, 'supplied=', msg.key); return; }
-      const now = Date.now();
-      const t = Number(msg.time);
-      if (type === 'seek' && isFinite(t) && t >= 0) {
-        lastBroadcast = { t, paused: lastBroadcast.paused, ts: now, rev: mediaRev, path: mediaRel };
-        console.log('[ws] seek', t.toFixed(3));
-      } else if (type === 'play') {
-        if (isFinite(t) && t >= 0) lastBroadcast = { t, paused: false, ts: now, rev: mediaRev, path: mediaRel }; else lastBroadcast = { ...lastBroadcast, paused:false, ts: now };
-        console.log('[ws] play', isFinite(t)?t.toFixed(3):'?');
-      } else if (type === 'pause') {
-        if (isFinite(t) && t >= 0) lastBroadcast = { t, paused: true, ts: now, rev: mediaRev, path: mediaRel }; else lastBroadcast = { ...lastBroadcast, paused:true, ts: now };
-        console.log('[ws] pause', isFinite(t)?t.toFixed(3):'?');
-      } else if (type === 'tick') {
-        // Periodic position update while playing OR implicit play detection
-        if (isFinite(t) && t >= 0) {
-          if (lastBroadcast.paused) {
-            if (t > lastBroadcast.t + 0.2) { // treat as implicit play
-              lastBroadcast = { t, paused:false, ts: now, rev: mediaRev, path: mediaRel };
-              console.log('[ws] implicit play via tick', t.toFixed(3));
-            }
-          } else if (t > lastBroadcast.t) {
-            lastBroadcast = { t, paused:false, ts: now, rev: mediaRev, path: mediaRel };
+    const now = Date.now();
+    const meta = clientMeta.get(socket); if (!meta) return;
+    meta.lastSeen = now;
+    switch(msg.type){
+      case 'ping':
+        // presence updated above
+        break;
+      case 'chat': {
+        const text = (msg.text||'').toString().slice(0,500).trim();
+        if (!text) break;
+        // rate limit
+        meta.msgTimes = meta.msgTimes.filter(t => now - t < CHAT_RATE_WINDOW_MS);
+        if (meta.msgTimes.length >= CHAT_RATE_MAX) { try { socket.send(JSON.stringify({ type:'error', error:'rate'})); } catch {} break; }
+        meta.msgTimes.push(now);
+        pushChat({ type:'chat', id: meta.id, name: meta.color? meta.color: 'anon'+meta.id, color: meta.color, text, ts: now });
+        break; }
+      case 'select': // deprecated in UI (was 'load')
+      case 'load': {
+        const isAdminMsg = (msg.admin === ADMIN_KEY || msg.key === ADMIN_KEY);
+        if (!isAdminMsg) { console.log('[ws] denied load/select (not admin)'); break; }
+        if (msg.path && typeof msg.path === 'string') {
+          const resolved = resolveMedia(msg.path);
+          if (resolved) {
+            mediaFile = resolved.abs; mediaRel = resolved.rel; mediaRev++;
+            lastBroadcast = { t:0, paused:true, ts: now, rev: mediaRev, path: mediaRel };
+            cachedAudioRev = -1; cachedAudioList = [];
+            console.log('[ws] load media', mediaRel);
+            pushSystemAdmin(`media selected: ${mediaRel}`);
+            broadcastState();
+          } else {
+            console.log('[ws] load failed: not found', msg.path);
           }
         }
-      }
-      broadcastState();
+        break; }
+      case 'unload': {
+        const isAdminMsg = (msg.admin === ADMIN_KEY || msg.key === ADMIN_KEY);
+        if (!isAdminMsg) { console.log('[ws] denied unload (not admin)'); break; }
+        if (mediaFile) {
+          console.log('[ws] unload media', mediaRel);
+          mediaFile = null; mediaRel = null; mediaRev++;
+          lastBroadcast = { t:0, paused:true, ts: now, rev: mediaRev, path: mediaRel };
+          cachedAudioRev = -1; cachedAudioList = [];
+          pushSystemAdmin('media unloaded (home)');
+          broadcastState();
+        }
+        break; }
+      case 'play': {
+        if (typeof msg.t === 'number' && msg.t >= 0) {
+          lastBroadcast = { t: msg.t, paused:false, ts: now, rev: mediaRev, path: mediaRel };
+          broadcastState();
+        }
+        break; }
+      case 'pause': {
+        if (typeof msg.t === 'number' && msg.t >= 0) {
+          lastBroadcast = { t: msg.t, paused:true, ts: now, rev: mediaRev, path: mediaRel };
+          broadcastState();
+        }
+        break; }
+      case 'seek': {
+        if (typeof msg.t === 'number' && msg.t >= 0) {
+          lastBroadcast = { t: msg.t, paused: !!msg.paused, ts: now, rev: mediaRev, path: mediaRel };
+          broadcastState();
+        }
+        break; }
+      case 'tick': {
+        if (typeof msg.t === 'number' && msg.t >= 0 && !lastBroadcast.paused) {
+          // drift correction: if remote ahead by >0.25s advance reference
+            if (msg.t > lastBroadcast.t + 0.25) {
+              lastBroadcast = { t: msg.t, paused:false, ts: now, rev: mediaRev, path: mediaRel };
+              broadcastState();
+            }
+        }
+        break; }
     }
   });
+  socket.on('close', ()=> console.log('[ws] client closed'));
   socket.on('close', ()=>{
     const m = clientMeta.get(socket);
     if (m) { pushSystem((m.color? m.color: ('anon'+m.id)) + ' left'); releaseColor(m.color); clientMeta.delete(socket); broadcastPresence(); }
@@ -227,6 +216,60 @@ function broadcastState(){
 const ROOT = process.cwd();
 // Only serve system-managed outputs (transcoded + subtitles) from media/output; raw user imports live elsewhere
 const mediaRoot = path.join(ROOT, 'media', 'output');
+// Cached audio stream probe (reset when mediaRev changes)
+let cachedAudioRev = -1; // rev used for cache
+let cachedAudioList = [];
+
+// Unified episode key extraction (handles SxxEyy, Exx, and " - 01 " patterns in release names)
+function episodeKeyFromName(name){
+  if(!name) return null;
+  const base = name.replace(/\.(wp\.mp4|webm)$/i,'');
+  const lower = base.toLowerCase();
+  let m = lower.match(/(s\d{1,2}e\d{1,3})/i); if (m) return m[1].toUpperCase();
+  m = lower.match(/\b(e\d{2,3})\b/i); if (m) return m[1].toUpperCase();
+  // Pattern: space-hyphen-space + number (e.g., " - 01 ") followed by space or end or bracket
+  m = lower.match(/ - (\d{2,3})(?=\s|\[|$)/); if (m) { const num = m[1]; return 'S01E' + num.padStart(2,'0'); }
+  return null;
+}
+
+function probeAudioStreams(file){
+  try {
+    if (!file) return [];
+    if (cachedAudioRev === mediaRev && cachedAudioList.length && file === mediaFile) return cachedAudioList;
+    const args = [
+      '-v','error',
+      '-select_streams','a',
+      '-show_entries','stream=index,codec_name,channels,sample_rate:stream_tags=language,title:stream_disposition=default',
+      '-of','json',
+      file
+    ];
+    const res = spawnSync('ffprobe', args, { encoding: 'utf8' });
+    if (res.error) { console.warn('[ffprobe] spawn error', res.error); return []; }
+    const txt = (res.stdout||'').trim();
+    if (!txt) return [];
+    let j; try { j = JSON.parse(txt); } catch { return []; }
+    const out = [];
+    if (j && Array.isArray(j.streams)) {
+      for (const s of j.streams) {
+        out.push({
+          index: s.index,
+            // language tag precedence: tags.language, tags.LANGUAGE, else ''
+          lang: (s.tags && (s.tags.language || s.tags.LANGUAGE) || '').toLowerCase(),
+          title: (s.tags && (s.tags.title || s.tags.TITLE) || ''),
+          codec: s.codec_name || '',
+          channels: s.channels || null,
+          sample_rate: s.sample_rate ? Number(s.sample_rate) : null,
+          default: !!(s.disposition && s.disposition.default)
+        });
+      }
+    }
+    cachedAudioList = out;
+    cachedAudioRev = mediaRev;
+    return out;
+  } catch (e) {
+    console.warn('[ffprobe] error', e); return [];
+  }
+}
 function findFirst() {
   if (process.env.MEDIA_FILE) {
     const p = path.isAbsolute(process.env.MEDIA_FILE) ? process.env.MEDIA_FILE : path.join(mediaRoot, process.env.MEDIA_FILE);
@@ -303,6 +346,8 @@ app.get(['/admin','/admin.html'], authGate, (req,res)=> res.sendFile(path.join(p
 app.use(express.static(publicDir));
 // Serve character sprite images (read-only)
 app.use('/media/sprites', express.static(path.join(ROOT,'media','sprites')));
+// Expose transcoded output directory (read-only) for sidecar audio & copied subtitle assets
+app.use('/media/output', express.static(path.join(ROOT,'media','output')));
 
 // Simple range-enabled endpoint
 app.get('/media/current.mp4', (req, res) => {
@@ -343,74 +388,132 @@ app.get('/api/colors', (_req, res) => {
   res.json({ palette: COLOR_PALETTE, hex: COLOR_HEX });
 });
 
-// Subtitle helper route (single sidecar: same basename with .vtt or .srt)
+// Subtitle route with cross-variant language selection & sanitization
 app.get('/media/current.vtt', (req, res) => {
   if (!mediaFile) return res.status(404).end();
   const base = mediaFile.replace(/\.(wp\.mp4|webm)$/i,'');
   const dir = path.dirname(base);
   const prefix = path.basename(base);
-  const directVtt = base + '.vtt';
-  const directSrt = base + '.srt';
-  let chosen=null; let type='vtt'; let langHint=null;
-  const wantLang = (req.query.lang||'').toLowerCase().trim();
-  // Enumerate variants first so lang is honored even if a base file exists
-  let files=[]; try { files = fs.readdirSync(dir); } catch {}
-  const lowPrefix = prefix.toLowerCase()+'.';
-  const vttCands = files.filter(f=> f.toLowerCase().startsWith(lowPrefix) && f.toLowerCase().endsWith('.vtt'));
-  const srtCands = files.filter(f=> f.toLowerCase().startsWith(lowPrefix) && f.toLowerCase().endsWith('.srt'));
-  if (wantLang) {
-    const matchV = vttCands.find(f=> new RegExp(`\\.${wantLang}(\\.|$)`).test(f.toLowerCase()));
-    const matchS = srtCands.find(f=> new RegExp(`\\.${wantLang}(\\.|$)`).test(f.toLowerCase()));
-    if (matchV) { chosen = path.join(dir, matchV); type='vtt'; }
-    else if (matchS) { chosen = path.join(dir, matchS); type='srt'; }
+  const epKey = (episodeKeyFromName(prefix) || '').toLowerCase();
+  const wantLangRaw = (req.query.lang||'').trim();
+  const wantLang = wantLangRaw.toLowerCase();
+  let files = [];
+  try { files = fs.readdirSync(dir); } catch {}
+  const candidates = [];
+  for (const f of files) {
+    const low = f.toLowerCase();
+    if (!(low.endsWith('.vtt') || low.endsWith('.srt'))) continue;
+    const subEp = (episodeKeyFromName(f) || '').toLowerCase();
+    const baseMatch = low.startsWith(prefix.toLowerCase() + '.');
+    const epMatch = epKey && subEp && subEp === epKey;
+    if (!baseMatch && !epMatch) continue;
+    const parts = f.split('.');
+    if (parts.length < 3) continue;
+    const ext = parts.pop();
+    const langGuess = parts[parts.length-1].toLowerCase();
+    candidates.push({ file: f, low, ext: ext.toLowerCase(), lang: langGuess, baseMatch, epMatch });
   }
-  function pick(cands){
-    if(!cands.length) return null;
-    const prefer = cands.find(f=> /\.eng(\.|$)/i.test(f)) || cands.find(f=> /\.en(\.|$)/i.test(f));
-    return prefer || cands[0];
-  }
-  if (!chosen) {
-    // If no language requested or not found, prefer base file if present, else variants
-    if (fs.existsSync(directVtt)) { chosen = directVtt; type='vtt'; }
-    else if (fs.existsSync(directSrt)) { chosen = directSrt; type='srt'; }
-    else {
-      const pickVtt = pick(vttCands);
-      if (pickVtt) { chosen = path.join(dir, pickVtt); type='vtt'; }
-      else {
-        const pickSrt = pick(srtCands);
-        if (pickSrt) { chosen = path.join(dir, pickSrt); type='srt'; }
-      }
-    }
-  }
-  if (chosen) {
-    const parts = path.basename(chosen).split('.');
-    if (parts.length >= 3) { langHint = parts[parts.length-2]; }
-  }
-  if (!chosen) return res.status(404).end();
+  let chosenObj = null;
+  function pickFirst(fn){ return candidates.find(fn) || null; }
+  if (wantLang) chosenObj = pickFirst(c=> c.lang===wantLang && c.baseMatch) || pickFirst(c=> c.lang===wantLang);
+  if (!chosenObj) chosenObj = pickFirst(c=> /^(eng|en)$/i.test(c.lang) && c.baseMatch) || pickFirst(c=> /^(eng|en)$/i.test(c.lang));
+  if (!chosenObj) chosenObj = pickFirst(c=> c.baseMatch);
+  if (!chosenObj) chosenObj = candidates[0];
+  if (!chosenObj) return res.status(404).end();
+  const chosen = path.join(dir, chosenObj.file);
+  const type = chosenObj.ext === 'srt' ? 'srt':'vtt';
+  const langHint = chosenObj.lang;
+  res.setHeader('X-Subtitle-Source', chosenObj.file);
+  res.setHeader('X-Subtitle-Lang', langHint);
   try {
-    if (type === 'vtt') {
-      res.setHeader('Content-Type','text/vtt; charset=utf-8');
-      if (langHint) res.setHeader('X-Subtitle-Lang', langHint);
-      if (req.method === 'HEAD') return res.status(200).end();
-      fs.createReadStream(chosen).pipe(res);
-    } else {
-      const raw = fs.readFileSync(chosen,'utf8');
-      if (req.method === 'HEAD') { res.setHeader('Content-Type','text/vtt; charset=utf-8'); if (langHint) res.setHeader('X-Subtitle-Lang', langHint); return res.status(200).end(); }
-      const lines = raw.replace(/\r/g,'').split('\n');
-      let out = ['WEBVTT',''];
-      for (let i=0;i<lines.length;i++) {
-        const line = lines[i];
+    if (req.method === 'HEAD') { res.setHeader('Content-Type','text/vtt; charset=utf-8'); return res.status(200).end(); }
+    let raw = fs.readFileSync(chosen,'utf8').replace(/\r/g,'');
+    if (type === 'srt') {
+      const out=['WEBVTT',''];
+      const lines = raw.split('\n');
+      for (const line of lines){
         if (/^\d+$/.test(line.trim())) continue;
-        const m = line.match(/^(\d\d:\d\d:\d\d),(\d{3}) --> (\d\d:\d\d:\d\d),(\d{3})(.*)$/);
-        if (m) out.push(`${m[1]}.${m[2]} --> ${m[3]}.${m[4]}${m[5]}`); else out.push(line);
+        const m=line.match(/^(\d\d:\d\d:\d\d),(\d{3}) --> (\d\d:\d\d:\d\d),(\d{3})(.*)$/); if (m) out.push(`${m[1]}.${m[2]} --> ${m[3]}.${m[4]}${m[5]}`); else out.push(line);
       }
-      res.setHeader('Content-Type','text/vtt; charset=utf-8');
-      if (langHint) res.setHeader('X-Subtitle-Lang', langHint);
-      res.send(out.join('\n'));
+      raw = out.join('\n');
     }
-  } catch (e) {
-    console.error('[subs] error serving subtitles', e); res.status(500).end();
+    if (!/^WEBVTT/m.test(raw)) raw = 'WEBVTT\n\n'+raw;
+    let lines = raw.split('\n');
+    let lastCueText=null;
+    lines = lines.map(line=>{
+      if (/^WEBVTT/.test(line) || /-->/.test(line)) return line;
+      line = line.replace(/\{[^}]*\}/g,'');
+      line = line.replace(/\[[^\]]*(?:translator|tl note|t\/n|note)[^\]]*\]/ig,'');
+      line = line.replace(/\s{2,}/g,' ').trim();
+      return line;
+    });
+    const dedup=[];
+    for (const l of lines){
+      if (!/-->/.test(l) && l && l===lastCueText) continue;
+      if (!/-->/.test(l) && l) lastCueText=l; else if (/-->/.test(l)) lastCueText=null;
+      dedup.push(l);
+    }
+    res.setHeader('Content-Type','text/vtt; charset=utf-8');
+    res.send(dedup.join('\n'));
+  } catch(e){ console.error('[subs] error serving subtitles', e); res.status(500).end(); }
+});
+
+// List available embedded audio tracks for current media (requires ffprobe on PATH)
+app.get('/media/current-audio.json', (_req,res) => {
+  if (!mediaFile) return res.json({ tracks: [] });
+  const base = mediaFile.replace(/\.(wp\.mp4|webm)$/i,'');
+  const dir = path.dirname(base);
+  const prefix = path.basename(base);
+  const epKey = (episodeKeyFromName(prefix) || '').toLowerCase();
+  let sidecars = [];
+  try {
+    const files = fs.readdirSync(dir);
+    const escPrefix = prefix.replace(/[.*+?^${}()|[\]\\]/g,'\\$&');
+    const sidecarPrefixRe = new RegExp('^' + escPrefix + '\\.' + 'audio' + '\\.([a-z0-9_-]{2,8})(?:\\.[^.]+)?\\.(m4a|aac|mp4)$','i');
+    const sidecarEpisodeRe = epKey ? new RegExp('audio\\.([a-z0-9_-]{2,8})(?:\\.[^.]+)?\\.(m4a|aac|mp4)$','i') : null;
+    const byLang = new Map();
+    for (const f of files) {
+      const low = f.toLowerCase();
+      if (!(low.endsWith('.m4a') || low.endsWith('.aac') || low.endsWith('.mp4'))) continue;
+      let lang=null, codecExt=null;
+      let preferred = false;
+      let m = f.match(sidecarPrefixRe);
+      if (m) { lang = m[1].toLowerCase(); codecExt = (m[2]||'aac').toLowerCase(); preferred = true; }
+      else if (epKey && low.includes(epKey) && sidecarEpisodeRe && (m = f.match(sidecarEpisodeRe))) {
+        // cross-variant: ensure episode key present AND not already matched by prefix
+        if (low.includes(epKey)) { lang = m[1].toLowerCase(); codecExt = (m[2]||'aac').toLowerCase(); }
+      }
+      if (!lang) continue;
+      if (byLang.has(lang)) {
+        // Keep existing if it's preferred (prefix match) and new isn't, else replace
+        const existing = byLang.get(lang);
+        if (existing.preferred) continue; // don't override canonical
+        if (preferred || !existing.preferred) byLang.set(lang,{ file:f, preferred });
+      } else byLang.set(lang,{ file:f, preferred });
+    }
+    for (const [lang, info] of byLang.entries()){
+      sidecars.push({
+        logical: sidecars.length,
+        lang,
+        title: '',
+        codec: 'aac',
+        channels: null,
+        sample_rate: null,
+        default: false,
+        url: `/media/output/${encodeURIComponent(path.relative(path.join(process.cwd(),'media','output'), path.join(dir,info.file)).replace(/\\/g,'/'))}`,
+        kind: 'sidecar',
+        preferred: info.preferred
+      });
+    }
+  } catch {}
+  if (sidecars.length) {
+    // Mark first (English if present) as default
+    const eng = sidecars.find(t=> t.lang==='eng'||t.lang==='en');
+    if (eng) eng.default = true; else sidecars[0].default = true;
+    return res.json({ tracks: sidecars, rev: mediaRev });
   }
+  const embedded = probeAudioStreams(mediaFile).map((t,i)=> ({ ...t, logical: i, kind:'embedded', url: null }));
+  res.json({ tracks: embedded, rev: mediaRev });
 });
 
 // List available subtitle tracks for current media
@@ -419,12 +522,15 @@ app.get('/media/current-subs.json', (req,res) => {
   const base = mediaFile.replace(/\.(wp\.mp4|webm)$/i,'');
   const dir = path.dirname(base);
   const prefix = path.basename(base).toLowerCase() + '.';
+  const epKey = (episodeKeyFromName(prefix) || '').toLowerCase();
   let files=[]; try { files = fs.readdirSync(dir); } catch { return res.json({ tracks: [] }); }
   const tracks=[];
   for (const f of files){
     const low = f.toLowerCase();
-    if (!(low.startsWith(prefix))) continue;
     if (!(low.endsWith('.vtt') || low.endsWith('.srt'))) continue;
+  // Accept either same base OR episode keys match (robust across different release naming styles)
+  const subEpKey = (episodeKeyFromName(f) || '').toLowerCase();
+  if (!(low.startsWith(prefix) || (epKey && subEpKey && subEpKey === epKey))) continue;
     const parts = f.split('.'); // base, lang, maybe slug..., ext
     if (parts.length < 3) continue;
     const ext = parts.pop();
@@ -438,7 +544,7 @@ app.get('/media/current-subs.json', (req,res) => {
 });
 
 function listMedia(){
-  const out=[];
+  const all=[];
   (function walk(dir, rel){
     let entries=[]; try { entries=fs.readdirSync(dir,{withFileTypes:true}); } catch { return; }
     for (const e of entries){
@@ -446,11 +552,48 @@ function listMedia(){
       const r = rel? rel + '/' + e.name : e.name;
       if (e.isDirectory()) walk(abs,r); else {
         const low = e.name.toLowerCase();
-        if (low.endsWith('.wp.mp4') || low.endsWith('.webm')) out.push(r.replace(/\\/g,'/'));
+        if (low.endsWith('.wp.mp4') || low.endsWith('.webm')) all.push(r.replace(/\\/g,'/'));
       }
     }
   })(mediaRoot,'');
-  return out.sort();
+  // Group by episode key so only one canonical entry per episode is shown
+  const groups = new Map(); // key -> { chosen, candidates: [] }
+  for (const rel of all){
+    const file = rel.split(/[\\/]/).pop();
+    const k = episodeKeyFromName(file) || file.replace(/\.(wp\.mp4|webm)$/i,'');
+    const key = k.toUpperCase();
+    let g = groups.get(key); if(!g){ g={ chosen:null, candidates:[] }; groups.set(key,g); }
+    g.candidates.push(rel);
+  }
+  for (const [key,g] of groups.entries()){
+    // Pick canonical: prefer name NOT starting with '[' and containing SxxEyy (already key) and longer descriptive title
+    const sorted = [...g.candidates].sort((a,b)=>{
+      const an = a.split(/[\\/]/).pop();
+      const bn = b.split(/[\\/]/).pop();
+      const aBracket = an.startsWith('[')?1:0; const bBracket = bn.startsWith('[')?1:0;
+      if (aBracket !== bBracket) return aBracket - bBracket; // prefer non-bracket
+      // Prefer longer (likely descriptive) name
+      if (an.length !== bn.length) return bn.length - an.length;
+      return a.localeCompare(b);
+    });
+    g.chosen = sorted[0];
+  }
+  // Build list in episode order: try season/episode numeric ordering
+  function sortKey(rel){
+    const name = rel.split(/[\\/]/).pop();
+    const base = name.replace(/\.(wp\.mp4|webm)$/i,'');
+    const m = base.match(/s(\d{1,2})e(\d{1,3})/i); if (m){ return { s: Number(m[1]), e: Number(m[2]), raw: base }; }
+    const m2 = base.match(/e(\d{2,3})/i); if (m2){ return { s: 0, e: Number(m2[1]), raw: base }; }
+    return { s: 0, e: 9999, raw: base };
+  }
+  const chosen = [...groups.values()].map(g=>g.chosen).filter(Boolean);
+  chosen.sort((a,b)=>{
+    const ka = sortKey(a); const kb = sortKey(b);
+    if (ka.s !== kb.s) return ka.s - kb.s;
+    if (ka.e !== kb.e) return ka.e - kb.e;
+    return ka.raw.localeCompare(kb.raw);
+  });
+  return chosen;
 }
 
 const port = process.env.PORT ? Number(process.env.PORT) : 3000;

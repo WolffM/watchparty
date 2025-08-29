@@ -1,8 +1,6 @@
 Param(
   [switch] $Force,
-  [switch] $Verbose,
-  [int] $MaxParallel = 2,
-  [switch] $Stream  # stream ffmpeg output live (forces sequential)
+  [switch] $Verbose
 )
 
 # ------------------------------------------------------------
@@ -50,9 +48,62 @@ if ($queue.Count -eq 0) {
   Write-Host "Nothing to transcode (all outputs present)." -ForegroundColor Yellow
 } else {
   Write-Host "Queued videos: $($queue.Count)" -ForegroundColor Cyan
+  function Build-FfmpegArgs($src,$dst){
+  # Probe audio streams
+  $probeJson = & ffprobe -v error -print_format json -show_streams -select_streams a "$src" 2>$null
+  $audioStreams = @()
+  if ($probeJson) { try { $parsed = $probeJson | ConvertFrom-Json; $audioStreams = @($parsed.streams) } catch {} }
+
+  # Pick default (prefer eng/en)
+  $defaultIndex = 0
+  for($i=0;$i -lt $audioStreams.Count;$i++){
+    $lang = $null; try { $lang = $audioStreams[$i].tags.language } catch {}
+    if ($lang -and ($lang -match '^(eng|en)$')) { $defaultIndex = $i; break }
+  }
+
+  # Base video transcode (always normalize to H.264 yuv420p for compatibility)
+  $args = @(
+    '-y','-i', $src,
+    '-map','0:v:0',
+    '-c:v','libx264','-pix_fmt','yuv420p','-profile:v','high','-level:v','4.0',
+    '-preset','slow','-crf','20'
+  )
+
+  # Map each audio explicitly; decide copy vs transcode
+  for($i=0;$i -lt $audioStreams.Count;$i++){
+    $args += @('-map',"0:a:$i")
+    $codec = $null
+    try { $codec = $audioStreams[$i].codec_name } catch {}
+    if ($codec -eq 'aac') {
+      $args += @("-c:a:$i",'copy')
+    } else {
+      # Transcode (e.g. opus/flac) to AAC stereo 48k
+      $args += @("-c:a:$i",'aac', "-b:a:$i",'160k', "-ac:a:$i",'2', "-ar:a:$i",'48000')
+    }
+  }
+
+  # Metadata + default disposition
+  for($i=0;$i -lt $audioStreams.Count;$i++){
+    $lang = $null; $title = $null
+    try { $lang = $audioStreams[$i].tags.language } catch {}
+    try { $title = $audioStreams[$i].tags.title } catch {}
+    if (-not $lang) { $lang = 'und' } else { $lang = $lang.ToLower() }
+    $args += @("-metadata:s:a:$i","language=$lang")
+    if ($title) {
+      $san = ($title -replace '[:\r\n]',' ').Trim()
+      if ($san) { $args += @("-metadata:s:a:$i","title=$san") }
+    }
+    if ($i -eq $defaultIndex) {
+      $args += @("-disposition:a:$i",'default')
+    }
+  }
+
+  $args += @('-movflags','+faststart', $dst)
+  return ,$args
+}
   function Invoke-Transcode($src,$dst){
     Write-Host "Start: $(Split-Path -Leaf $src)" -ForegroundColor Green
-    $ffArgs = @('-y','-i', $src,'-c:v','libx264','-pix_fmt','yuv420p','-profile:v','high','-level:v','4.0','-preset','slow','-crf','20','-c:a','aac','-b:a','160k','-movflags','+faststart', $dst)
+    $ffArgs = Build-FfmpegArgs $src $dst
     if ($Verbose) { Write-Host "ffmpeg $($ffArgs -join ' ')" -ForegroundColor DarkGray }
     & ffmpeg @ffArgs
     if ($LASTEXITCODE -eq 0 -and (Test-Path -LiteralPath $dst)) {
@@ -61,43 +112,7 @@ if ($queue.Count -eq 0) {
       Write-Host "Failed: $(Split-Path -Leaf $src)" -ForegroundColor Red
     }
   }
-  if ($Stream -or $MaxParallel -le 1 -or $queue.Count -le 1) {
-    if ($Stream -and $MaxParallel -gt 1) { Write-Host "[warn] -Stream forces sequential; ignoring -MaxParallel $MaxParallel" -ForegroundColor Yellow }
-    foreach ($q in $queue) { Invoke-Transcode $q.Source $q.Dest }
-  } else {
-    $active = @()
-    foreach ($q in $queue) {
-      while ($active.Count -ge $MaxParallel) {
-        $finished = Wait-Job -Job $active -Any -Timeout 5
-        if ($finished) {
-          foreach ($fj in $finished) {
-            Receive-Job $fj | Write-Host
-            Remove-Job $fj
-            $active = $active | Where-Object { $_.Id -ne $fj.Id }
-          }
-        }
-      }
-      Write-Host "Start: $(Split-Path -Leaf $q.Source)" -ForegroundColor Green
-      $j = Start-Job -ScriptBlock {
-        param($src,$dst,$v)
-        $ffArgs = @('-y','-i', $src,'-c:v','libx264','-pix_fmt','yuv420p','-profile:v','high','-level:v','4.0','-preset','slow','-crf','20','-c:a','aac','-b:a','160k','-movflags','+faststart', $dst)
-        if ($v) { "[cmd] ffmpeg $($ffArgs -join ' ')" }
-        & ffmpeg @ffArgs 2>&1 | ForEach-Object { "[ffmpeg] $_" }
-        if ($LASTEXITCODE -eq 0 -and (Test-Path -LiteralPath $dst)) { "Done: $(Split-Path -Leaf $src) -> $(Split-Path -Leaf $dst)" } else { "Failed: $(Split-Path -Leaf $src)" }
-      } -ArgumentList $q.Source,$q.Dest,$Verbose
-      $active += $j
-    }
-    while ($active.Count -gt 0) {
-      $finished = Wait-Job -Job $active -Any -Timeout 5
-      if ($finished) {
-        foreach ($fj in $finished) {
-          Receive-Job $fj | Write-Host
-            Remove-Job $fj
-            $active = $active | Where-Object { $_.Id -ne $fj.Id }
-        }
-      }
-    }
-  }
+  foreach ($q in $queue) { Invoke-Transcode $q.Source $q.Dest }
   Write-Host "Video transcode pass complete." -ForegroundColor DarkGreen
 }
 
@@ -108,16 +123,16 @@ if ($queue.Count -eq 0) {
 $subScript = Join-Path $PSScriptRoot 'transcode-subtitles.ps1'
 if (Test-Path -LiteralPath $subScript) {
   Write-Host "Running subtitle extraction..." -ForegroundColor Cyan
-  $args = @()
-  $args += '-Source'; $args += $inputRoot
-  if ($Force) { $args += '-Force' }
-  if (-not $Verbose) { $args += '-Quiet' }
+  $subArgs = @()
+  $subArgs += '-Source'; $subArgs += $inputRoot
+  if ($Force) { $subArgs += '-Force' }
+  if (-not $Verbose) { $subArgs += '-Quiet' }
   # Prefer pwsh if available, else fallback to current powershell
   $pwshCmd = Get-Command pwsh -ErrorAction SilentlyContinue
   if ($pwshCmd) {
-    & pwsh -NoLogo -NoProfile $subScript @args
+  & pwsh -NoLogo -NoProfile $subScript @subArgs
   } else {
-    & powershell -NoLogo -NoProfile -File $subScript @args
+  & powershell -NoLogo -NoProfile -File $subScript @subArgs
   }
   if ($LASTEXITCODE -ne 0) { Write-Host "Subtitle extraction finished with code $LASTEXITCODE" -ForegroundColor Yellow } else { Write-Host "Subtitle extraction complete." -ForegroundColor DarkGreen }
 } else {

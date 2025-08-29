@@ -42,6 +42,9 @@
       max-height: 100%;
       object-fit: contain;
       background: #000;
+  will-change: clip-path;
+  backface-visibility: hidden;
+  -webkit-backface-visibility: hidden;
     }
 
     /* Custom subtitle bubble + native fullscreen styling */
@@ -293,6 +296,23 @@
       left: 0;
       font-size: 0;
     }
+    /* Vertical center-out wipe animation (enter + reverse for exit) */
+    @keyframes wipeInVertical {
+      /* Dramatic slow start then rapid expansion near end */
+      0% { clip-path: inset(50% 0 50% 0); }
+      45% { clip-path: inset(49% 0 49% 0); }
+      60% { clip-path: inset(46% 0 46% 0); }
+      72% { clip-path: inset(38% 0 38% 0); }
+      82% { clip-path: inset(26% 0 26% 0); }
+      90% { clip-path: inset(14% 0 14% 0); }
+      96% { clip-path: inset(5% 0 5% 0); }
+      100% { clip-path: inset(0 0 0 0); }
+    }
+    /* 40% longer (0.9s -> ~1.26s) with strong ease; exit uses reverse of same curve (rollback) */
+    video.wipe-enter { animation: wipeInVertical 1.26s cubic-bezier(0.85,0.05,1,0.55) forwards; }
+    video.wipe-exit { animation: wipeInVertical 1.26s cubic-bezier(0.85,0.05,1,0.55) reverse forwards; }
+  video.wipe-prep { clip-path: inset(50% 0 50% 0) !important; }
+    /* During wipe we keep video visible but may hide controls separately */
   /* Hide admin-only controls on viewer (non /admin path) via body:not(.is-admin) marker (added in script). */
   body:not(.is-admin) .admin-only { display: none !important; }
   </style>
@@ -353,7 +373,9 @@
       eng: 'English', en: 'English',
       jpn: 'Japanese', ja: 'Japanese',
       ger: 'German', de: 'German',
-      spa: 'Spanish', es: 'Spanish',
+  spa: 'Spanish', es: 'Spanish',
+  'spa.spanish-latin-america': 'Spanish (Latin America)',
+  'spanish-latin-america': 'Spanish (Latin America)',
       por: 'Portuguese', pt: 'Portuguese',
       ita: 'Italian', it: 'Italian',
       rus: 'Russian', ru: 'Russian',
@@ -387,10 +409,39 @@
       ccOverlay.style.maxWidth = Math.round(displayedWidth * (fs ? 0.92 : 0.88)) + 'px';
     }
     const videoWrap = document.getElementById('videoWrap');
+    // Wipe animation state
+    let wipeInProgress = false;
+    function triggerWipeEnter(){
+      if(!video) return;
+      video.classList.remove('wipe-exit');
+      // Prepare collapsed state BEFORE becoming visible
+      video.classList.add('wipe-prep');
+      video.style.display='block';
+      video.style.visibility='visible';
+      void video.offsetWidth; // ensure styles applied
+      video.classList.remove('wipe-prep');
+      void video.offsetWidth; // restart timeline after removing prep
+      video.classList.add('wipe-enter');
+  console.log('[transition] wipe-enter start');
+      wipeInProgress=true;
+  setTimeout(()=>{ wipeInProgress=false; video.classList.remove('wipe-enter'); }, 1300); // animation duration (~1.26s) + buffer
+    }
+    function triggerWipeExit(cb){
+      if(!video) { if(cb) cb(); return; }
+      video.classList.remove('wipe-enter');
+      // Ensure visible during collapse
+      video.style.display='block';
+      video.style.visibility='visible';
+      void video.offsetWidth;
+      video.classList.add('wipe-exit');
+  console.log('[transition] wipe-exit start');
+      wipeInProgress=true;
+  setTimeout(()=>{ wipeInProgress=false; video.classList.remove('wipe-exit'); if(cb) cb(); }, 1300); // duration (~1.26s) + buffer
+    }
     // Starfield home screen (visible when no media loaded yet)
     const starCanvas = document.createElement('canvas');
     starCanvas.id = 'starfield';
-    starCanvas.style.cssText = 'position:absolute;inset:0;width:100%;height:100%;display:block;background:#000;';
+  starCanvas.style.cssText = 'position:absolute;inset:0;width:100%;height:100%;display:block;background:#000;z-index:0;opacity:1;transition:opacity .5s;';
     videoWrap.insertBefore(starCanvas, videoWrap.firstChild);
     const ctx = starCanvas.getContext('2d');
     let stars = []; let starAnimId = null; let lastStarTs = 0;
@@ -421,8 +472,12 @@
       }
       starAnimId = requestAnimationFrame(stepStars);
     }
-    function startStarfield() { if (!starAnimId) { starAnimId = requestAnimationFrame(stepStars); starCanvas.style.display = 'block'; } }
-    function stopStarfield() { if (starAnimId) { cancelAnimationFrame(starAnimId); starAnimId = null; } starCanvas.style.display = 'none'; }
+    function startStarfield() {
+      if (!starAnimId) { starAnimId = requestAnimationFrame(stepStars); }
+      starCanvas.style.display = 'block';
+      requestAnimationFrame(()=>{ starCanvas.style.opacity = '1'; });
+    }
+    function stopStarfield() { if (starAnimId) { cancelAnimationFrame(starAnimId); starAnimId = null; } starCanvas.style.opacity='0'; setTimeout(()=>{ if(!starAnimId) starCanvas.style.display='none'; }, 520); }
     startStarfield();
     // Home (no media) UI helpers
     let noMediaGlobal = true; // start with no media loaded
@@ -548,7 +603,12 @@
           box.appendChild(search); box.appendChild(inner); wrap.appendChild(box); document.body.appendChild(wrap);
           box.querySelector('#mpClose').onclick = () => wrap.remove();
           const homeBtn = box.querySelector('#mpHome');
-          if (homeBtn) { homeBtn.onclick = () => { send('unload', {}); wrap.remove(); showToast('Returning to home'); }; }
+          if (homeBtn) { homeBtn.onclick = () => {
+            try { forceHomeCleanup(); } catch {}
+            send('unload', {});
+            wrap.remove();
+            showToast('Returning to home');
+          }; }
           wrap.addEventListener('click', e => { if (e.target === wrap) wrap.remove(); });
           document.addEventListener('keydown', function escHandler(ev) { if (ev.key === 'Escape') { try { wrap.remove(); } catch { } document.removeEventListener('keydown', escHandler); } });
         }
@@ -606,12 +666,155 @@
       ccWrap.style.cssText = 'display:flex;align-items:center;gap:6px;background:#222;border-radius:24px;padding:4px 10px;transition:background .15s;';
       ccWrap.onmouseenter = () => ccWrap.style.background = '#333';
       ccWrap.onmouseleave = () => ccWrap.style.background = '#222';
+      // Audio track selection button (cycles embedded audio tracks)
+      const audioBtn = mkBtn('Audio', 'Cycle audio track');
+      audioBtn.style.padding = '4px 10px';
+      let audioTracksMeta = []; // [{index,lang,title,default}]
+      let currentAudioLogical = null; // index within audioTracksMeta array
+      let sidecarMode = false; // true when using external Audio element
+      let sidecarAudioEl = null;
+      let sidecarLang = null;
+      let sidecarLastSync = 0;
+      function ensureSidecarEl(){
+        if (sidecarAudioEl) return sidecarAudioEl;
+        sidecarAudioEl = new Audio();
+        sidecarAudioEl.preload = 'auto';
+        sidecarAudioEl.crossOrigin='anonymous';
+        sidecarAudioEl.style.display='none';
+        document.body.appendChild(sidecarAudioEl);
+        // keep volume in sync with main video
+        sidecarAudioEl.volume = video.volume;
+        video.addEventListener('volumechange', ()=>{ if(sidecarAudioEl) sidecarAudioEl.volume = video.volume; });
+        return sidecarAudioEl;
+      }
+      function detachSidecar(){ if(sidecarAudioEl){ try { sidecarAudioEl.pause(); } catch{} sidecarLang=null; } }
+      function syncSidecar(now){
+        if(!sidecarMode || !sidecarAudioEl || video.paused) return;
+        const dt = Math.abs(sidecarAudioEl.currentTime - video.currentTime);
+        if (dt > 0.2){ sidecarAudioEl.currentTime = video.currentTime; }
+        // rate correction (light drift smoothing)
+        sidecarAudioEl.playbackRate = video.playbackRate;
+        sidecarLastSync = now;
+      }
+      setInterval(()=>{ if(sidecarMode) syncSidecar(Date.now()); }, 750);
+      async function loadAudioTracks(){
+        if (!video.src) { audioTracksMeta=[]; currentAudioLogical=null; updateAudioBtn(); return; }
+        try {
+          const r = await fetch('/media/current-audio.json?_=' + Date.now());
+          if (!r.ok) return;
+          const j = await r.json();
+          if (j && Array.isArray(j.tracks)) {
+            audioTracksMeta = j.tracks.map((t,i)=>({logical:i, ...t}));
+            sidecarMode = audioTracksMeta.some(t=> t.kind==='sidecar');
+            // pick default else first
+            const def = audioTracksMeta.find(t=>t.default) || audioTracksMeta[0];
+            if (def) currentAudioLogical = def.logical; else currentAudioLogical = null;
+            applyAudioSelection();
+          }
+        } catch {}
+        updateAudioBtn();
+      }
+      function friendlyAudioLabel(t){
+        if (!t) return 'Audio';
+        const langMap = { eng:'EN', en:'EN', jpn:'JP', ja:'JP', japanese:'JP', english:'EN' };
+  let lab = (t.lang && langMap[t.lang]) || (t.lang && t.lang!=='und' ? t.lang.substring(0,2).toUpperCase() : ('A'+(t.logical+1)));
+        if (t.title) {
+          const shortTitle = t.title.length>10? t.title.slice(0,10)+'…' : t.title;
+          lab += ':' + shortTitle;
+        }
+        return lab;
+      }
+      function updateAudioBtn(){
+        if (!audioTracksMeta.length) { audioBtn.textContent='Audio'; delete audioBtn.dataset.active; audioBtn.style.background='#222'; return; }
+        const cur = audioTracksMeta.find(t=>t.logical===currentAudioLogical) || audioTracksMeta[0];
+        audioBtn.textContent = friendlyAudioLabel(cur);
+  // Build tooltip with all tracks
+  audioBtn.title = 'Audio tracks: ' + audioTracksMeta.map(t=> (t.logical===currentAudioLogical?'*':' ') + friendlyAudioLabel(t) + (t.lang? ' ['+t.lang+']':'') ).join(' | ');
+        audioBtn.dataset.active='1'; audioBtn.style.background='#2e78d2'; audioBtn.style.color='#fff';
+      }
+      function applyAudioSelection(){
+        const target = audioTracksMeta.find(t=>t.logical===currentAudioLogical);
+        if (!target) return;
+        // Always pause / detach any existing sidecar before switching
+        if (sidecarAudioEl && sidecarAudioEl !== video) { try { sidecarAudioEl.pause(); } catch{} }
+        if (sidecarMode && target.kind==='sidecar') {
+          // Mute internal audio (so we always start from a predictable state)
+          video.muted = true;
+          const el = ensureSidecarEl();
+            const needSrc = (!sidecarLang || sidecarLang!==target.lang);
+            if (needSrc){
+              el.pause();
+              el.src = target.url;
+              sidecarLang = target.lang;
+              el.load();
+              // Align currentTime after short delay; do NOT auto-play if video is paused
+              setTimeout(()=>{ try { el.currentTime = video.currentTime; } catch{} }, 250);
+            }
+            // Only start sidecar audio if the main video is currently playing
+            if (!video.paused) { const p2 = el.play(); if(p2&&p2.catch) p2.catch(()=>{}); }
+        } else {
+          // Ensure sidecar is stopped if switching back to embedded
+          if (sidecarAudioEl) { try { sidecarAudioEl.pause(); } catch{} }
+          // Embedded switching attempt (best-effort)
+          try {
+            const list = video.audioTracks;
+            if (list && list.length) {
+              for (let i=0;i<list.length;i++) {
+                const tr = list[i];
+                const lang = (tr.language||'').toLowerCase();
+                tr.enabled = (lang === target.lang);
+              }
+            }
+          } catch {}
+          // Unmute video when using embedded track (unless user explicitly muted earlier)
+          if (!userMuted) video.muted = false;
+        }
+      }
+      audioBtn.onclick = () => {
+        if (!audioTracksMeta.length) { loadAudioTracks(); return; }
+        if (currentAudioLogical==null) currentAudioLogical=0; else currentAudioLogical = (currentAudioLogical+1) % audioTracksMeta.length;
+        applyAudioSelection(); updateAudioBtn(); showToast('Audio: ' + friendlyAudioLabel(audioTracksMeta.find(t=>t.logical===currentAudioLogical)));
+      };
+      // Maintain sidecar play/pause sync
+      video.addEventListener('play', ()=>{ if(sidecarMode && sidecarAudioEl){ const p=sidecarAudioEl.play(); if(p&&p.catch)p.catch(()=>{}); }});
+      video.addEventListener('pause', ()=>{ if(sidecarMode && sidecarAudioEl) sidecarAudioEl.pause(); });
+      video.addEventListener('seeking', ()=>{ if(sidecarMode && sidecarAudioEl){ try { sidecarAudioEl.currentTime = video.currentTime; } catch{} } });
+  // Guard against dual playback: if both video (unmuted) and sidecar playing, mute video
+  setInterval(()=>{ if(sidecarMode && sidecarAudioEl && !video.paused){ if(!video.muted && !sidecarAudioEl.paused){ video.muted = true; } } }, 1000);
+      // Re-probe audio tracks when metadata loads or media changes
+      video.addEventListener('loadedmetadata', () => { setTimeout(loadAudioTracks, 100); });
+      const __origApplyState = applyState; // intercept to detect media change
+      applyState = function(s){
+        const oldPath = lastState && lastState.path;
+        __origApplyState(s);
+        if (!s || s.path !== oldPath) { audioTracksMeta=[]; currentAudioLogical=null; updateAudioBtn(); if (s && s.path) setTimeout(loadAudioTracks, 250); }
+      };
+      ccWrap.appendChild(audioBtn);
       ccWrap.appendChild(subBtn); ccWrap.appendChild(ccSelect); ccWrap.appendChild(styleSelect);
       ctr.appendChild(fsBtn); ctr.appendChild(ccWrap); ctr.appendChild(volWrap);
       // If admin seek bar exists, move volume group before it
       setTimeout(() => { if (typeof seekWrap !== 'undefined' && seekWrap && volWrap.parentNode === ctr) { ctr.insertBefore(volWrap, seekWrap); } }, 0);
       // Chat toggle button (moved from separate expand/collapse UI)
       const chatToggleBtn = mkBtn('Chat', 'Toggle Chat Panel');
+      // Robust home cleanup helper
+      function forceHomeCleanup(){
+        const afterExit = ()=>{
+          try { if(sidecarAudioEl){ sidecarAudioEl.pause(); sidecarAudioEl.remove(); sidecarAudioEl=null; sidecarLang=null; } } catch{}
+          try { video.pause(); video.removeAttribute('src'); video.load(); } catch{}
+          refreshSubs();
+          noMediaGlobal = true;
+          if (typeof startStarfield==='function') startStarfield();
+          if (video) video.style.display='none';
+          if (homeSelectEl) homeSelectEl.style.display='inline-flex';
+        };
+        // If video currently visible trigger exit wipe with starfield starting behind
+        if(video && video.style.display!== 'none') {
+          if (typeof startStarfield==='function') startStarfield();
+          triggerWipeExit(afterExit);
+        } else { afterExit(); }
+      }
+      // Fallback safety: if unload state not reflected after 2s, force local cleanup
+      function scheduleHomeFallback(){ setTimeout(()=>{ if(!lastState || lastState.path){ forceHomeCleanup(); } }, 2000); }
       function updateChatToggle() {
         const open = !chatPanel.classList.contains('collapsed');
         chatToggleBtn.textContent = 'Chat';
@@ -653,8 +856,13 @@
           const normLabel = (label || '').toLowerCase();
           // If label missing/looks like raw code or very short, map to friendly name
           if (!t.label || normLabel === normLang || label.length <= 3) {
+            // Support compound identifiers like spa.spanish-latin-america
             if (LANG_DISPLAY[normLang]) label = LANG_DISPLAY[normLang];
+            else if (LANG_DISPLAY[t.lang]) label = LANG_DISPLAY[t.lang];
           }
+          // Additional normalization for Spanish variants where slug added original code (e.g. "spanish-latin-america spa")
+          if (/^spanish-latin-america\b/i.test(normLabel)) label = 'Spanish (Latin America)';
+          else if (/^spanish\b/i.test(normLabel)) label = 'Spanish';
           o.textContent = label;
           ccSelect.appendChild(o);
         });
@@ -681,7 +889,22 @@
       // overlayBtn handles toggling now
       document.addEventListener('fullscreenchange', updateFloatingVisibility);
       setInterval(() => { if (subsEnabled) renderActiveCues(); }, 600);
-      window.addEventListener('resize', () => { if (subsEnabled) layoutSubs(); });
+      window.addEventListener('resize', () => { if (subsEnabled) layoutSubs(); resizeSeek(); });
+      function resizeSeek(){
+        if(!seekWrap || !seek) return;
+        // Available width inside control bar minus other groups
+        try {
+          const barW = ctr.clientWidth || window.innerWidth;
+          // Rough width occupied by other control groups
+          const other = Array.from(ctr.children).filter(ch=> ch!==seekWrap).reduce((a,c)=> a + c.getBoundingClientRect().width + 12, 0);
+          const avail = Math.max(120, barW - other - 60);
+          const min = 180, max = 560;
+          const target = Math.max(min, Math.min(max, avail));
+          seek.style.width = target + 'px';
+        } catch {}
+      }
+      setTimeout(resizeSeek, 400);
+      setInterval(resizeSeek, 1500); // periodic sanity adjustment
       video.addEventListener('loadedmetadata', layoutSubs);
 
       // Hover / inactivity fade logic
@@ -781,11 +1004,18 @@
       const noMedia = !s.path;
       if (noMedia) {
         if (!noMediaGlobal) { noMediaGlobal = true; }
-        startStarfield();
+    // Starfield will start after exit wipe completes (handled in triggerWipeExit callback below)
         if (typeof hideCtr === 'function') hideCtr();
         if (isAdmin) { ensureHomeSelect(); if (homeSelectEl) homeSelectEl.style.display = 'inline-flex'; }
         // Hide video element to reveal starfield fully
-        if (video) { video.pause(); video.style.display = 'none'; }
+        if (video) {
+          // animate exit if currently showing a path
+      if(video.style.display !== 'none' && lastState && lastState.path){
+        // Begin starfield behind video before collapsing so wipe reveals it
+        if (typeof startStarfield==='function') startStarfield();
+        triggerWipeExit(()=>{ try { video.pause(); video.style.display='none'; } catch{}; });
+          } else { video.pause(); video.style.display='none'; }
+        }
       } else {
   const wasHome = noMediaGlobal;
   if (noMediaGlobal) { noMediaGlobal = false; }
@@ -793,7 +1023,10 @@
   if (homeSelectEl) homeSelectEl.style.display = 'none';
   // Only auto-show controls once when leaving home screen; afterward rely on hover inside video area.
   if (wasHome && typeof showCtr === 'function') showCtr();
-  if (video) { video.style.display = 'block'; }
+  if (video) {
+    const needAnim = wasHome;
+    if(needAnim) { triggerWipeEnter(); } else { video.style.display='block'; }
+  }
       }
       if (VERBOSE) {
         overlay.textContent = (isAdmin ? '[HOST] ' : '') + (s.path || '') + '\n' + (s.paused ? 'paused' : 'playing') + ` t=${target.toFixed(2)} drift=${drift.toFixed(3)} lat=${latencyMs}ms`;
@@ -802,19 +1035,22 @@
         overlay.textContent = (isAdmin ? '[HOST] ' : '') + (s.paused ? 'paused' : 'playing') + ` lat=${latencyMs}ms`;
       }
       if (lastRev === null) { try { updateMediaTitle(s.path); } catch { } }
+  // If admin requested unload (home) ensure any stray sidecar audio halted
+  try { if (noMedia && typeof sidecarAudioEl !== 'undefined' && sidecarAudioEl){ sidecarAudioEl.pause(); } } catch{}
       if (s.rev != null && s.rev !== lastRev) {
         // media changed – reset join staging
         lastRev = s.rev; initialSync = true; pendingTarget = null; joinStart = Date.now();
         try { if (window.resetMediaUi) window.resetMediaUi(); } catch { }
         try { updateMediaTitle(s.path); } catch { }
-        if (s.path) {
+  if (s.path) {
           // New media selected
-          suppress = true; video.currentTime = 0; video.src = '/media/current.mp4?rev=' + s.rev; video.style.display = 'block'; video.load(); setTimeout(() => suppress = false, 150);
+          suppress = true; video.currentTime = 0; video.src = '/media/current.mp4?rev=' + s.rev; video.load(); setTimeout(() => suppress = false, 150);
+          triggerWipeEnter();
           // Attempt to auto-enable subtitles with retries
           autoSubsAttempted=false; scheduleAutoSubs(5);
         } else {
           // Unloaded -> home; clear src to avoid 404 black overlay
-          try { video.removeAttribute('src'); video.load(); } catch { }
+          triggerWipeExit(()=>{ try { video.removeAttribute('src'); video.load(); } catch { } });
         }
         return; // wait for metadata before applying more
       }

@@ -56,7 +56,7 @@ if($Source){
   if(Test-Path -LiteralPath $Source){
     $item = Get-Item -LiteralPath $Source
     if($item.PSIsContainer){
-      $targets = Get-ChildItem -Path $item.FullName -Recurse -File -Include *.mkv | Sort-Object FullName
+  $targets = Get-ChildItem -Path $item.FullName -Recurse -File -Include *.mkv | Sort-Object FullName
     } else {
       if($Single){ $targets = @($item) } else { $targets = @($item) }
     }
