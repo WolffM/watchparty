@@ -34,7 +34,7 @@ const COLOR_HEX = {
   'übel':  '#667240'
 };
 let colorsAvailable = [...COLOR_PALETTE];
-const clientMeta = new Map(); // socket -> { id, color, lastSeen, msgTimes: number[] }
+const clientMeta = new Map(); // socket -> { id, color, customName, lastSeen, msgTimes: number[], isAdmin }
 let nextClientId = 1;
 const chatHistory = []; // ring buffer of { type:'chat', id,name,color,text,ts }
 const CHAT_HISTORY_LIMIT = 200;
@@ -47,9 +47,15 @@ const CHAT_RATE_WINDOW_MS = 5000; // time window
 
 function assignColor(){ if(colorsAvailable.length) return colorsAvailable.shift(); return null; }
 function releaseColor(c){ if(!c) return; if(COLOR_PALETTE.includes(c) && !colorsAvailable.includes(c)) { colorsAvailable.push(c); /* maintain original order */ colorsAvailable = COLOR_PALETTE.filter(col => colorsAvailable.includes(col)); } }
+function displayName(meta){
+  if (!meta) return '';
+  if (meta.customName && meta.customName.trim()) return meta.customName.trim();
+  if (meta.color) return meta.color;
+  return 'anon'+meta.id;
+}
 function broadcastPresence(){
   const users = [];
-  for (const meta of clientMeta.values()) { users.push({ id: meta.id, name: meta.color ? meta.color : 'anon'+meta.id, color: meta.color }); }
+  for (const meta of clientMeta.values()) { users.push({ id: meta.id, name: displayName(meta), color: meta.color }); }
   const payload = JSON.stringify({ type:'presence', users });
   for (const c of wss.clients) { if (c.readyState === 1) c.send(payload); }
 }
@@ -76,7 +82,7 @@ function pushSystemAdmin(text){
   // Do NOT store in global chat history for viewers; admins will still see it within their session
 }
 function sendSelf(socket, meta){
-  try { socket.send(JSON.stringify({ type:'self', id: meta.id, name: meta.color? meta.color: 'anon'+meta.id, color: meta.color })); } catch {}
+  try { socket.send(JSON.stringify({ type:'self', id: meta.id, name: displayName(meta), color: meta.color })); } catch {}
 }
 function sendChatHistory(socket){
   const items = chatHistory.slice(-CHAT_HISTORY_SEND);
@@ -125,7 +131,34 @@ wss.on('connection', (socket, req) => {
         meta.msgTimes = meta.msgTimes.filter(t => now - t < CHAT_RATE_WINDOW_MS);
         if (meta.msgTimes.length >= CHAT_RATE_MAX) { try { socket.send(JSON.stringify({ type:'error', error:'rate'})); } catch {} break; }
         meta.msgTimes.push(now);
-        pushChat({ type:'chat', id: meta.id, name: meta.color? meta.color: 'anon'+meta.id, color: meta.color, text, ts: now });
+        pushChat({ type:'chat', id: meta.id, name: displayName(meta), color: meta.color, text, ts: now });
+        break; }
+      case 'rename': {
+        // Accept optional color & name; enforce uniqueness of color
+        const newColor = msg.color && typeof msg.color === 'string' ? msg.color.toLowerCase() : null;
+        let newNameRaw = msg.name && typeof msg.name === 'string' ? msg.name : '';
+        if (newNameRaw.length > 40) newNameRaw = newNameRaw.slice(0,40);
+        // Sanitize name: allow letters/numbers/basic punctuation + spaces
+        let newName = newNameRaw.replace(/[^\w \-'.!?,]/g,'').trim();
+        if (newName.length > 40) newName = newName.slice(0,40);
+        let changed = false;
+        if (newColor && COLOR_PALETTE.includes(newColor) && newColor !== meta.color) {
+          // ensure not in use by someone else
+            let inUse = false;
+            for (const m of clientMeta.values()) { if (m !== meta && m.color === newColor) { inUse = true; break; } }
+            if (inUse) { try { socket.send(JSON.stringify({ type:'rename-result', ok:false, reason:'in-use' })); } catch {} break; }
+            // release old, assign new
+            releaseColor(meta.color);
+            meta.color = newColor;
+            colorsAvailable = colorsAvailable.filter(c=> c!==newColor); // ensure removed
+            changed = true;
+        }
+        if (newName && newName !== meta.customName) { meta.customName = newName; changed = true; }
+        if (!changed) { try { socket.send(JSON.stringify({ type:'rename-result', ok:false, reason:'unchanged' })); } catch {} break; }
+        try { socket.send(JSON.stringify({ type:'rename-result', ok:true, color: meta.color, name: displayName(meta) })); } catch {}
+        // update self meta to requester
+        sendSelf(socket, meta);
+        broadcastPresence();
         break; }
       case 'select': // deprecated in UI (was 'load')
       case 'load': {
@@ -191,7 +224,7 @@ wss.on('connection', (socket, req) => {
     try { if (reasonBuf) reason = reasonBuf.toString(); } catch {}
     console.log('[ws] client closed', meta.id, 'code=', code, 'reason=', reason);
     const m = clientMeta.get(socket);
-    if (m) { pushSystem((m.color? m.color: ('anon'+m.id)) + ' left'); releaseColor(m.color); clientMeta.delete(socket); broadcastPresence(); }
+  if (m) { pushSystem((m.color? m.color: ('anon'+m.id)) + ' left'); releaseColor(m.color); clientMeta.delete(socket); broadcastPresence(); }
   });
   socket.on('error', err => {
     console.warn('[ws] client error', meta.id, err?.message);

@@ -296,21 +296,16 @@
       left: 0;
       font-size: 0;
     }
-    /* Vertical center-out wipe animation (enter + reverse for exit) */
+    /* Vertical center-out wipe animation (enter + reverse for exit)
+       Simplified to 2 keyframes to let GPU interpolate smoothly; previous many stops caused perceived stutter.
+       Easing curve: fast acceleration after gentle lift-off, then easing into full reveal. */
     @keyframes wipeInVertical {
-      /* Dramatic slow start then rapid expansion near end */
-      0% { clip-path: inset(50% 0 50% 0); }
-      45% { clip-path: inset(49% 0 49% 0); }
-      60% { clip-path: inset(46% 0 46% 0); }
-      72% { clip-path: inset(38% 0 38% 0); }
-      82% { clip-path: inset(26% 0 26% 0); }
-      90% { clip-path: inset(14% 0 14% 0); }
-      96% { clip-path: inset(5% 0 5% 0); }
-      100% { clip-path: inset(0 0 0 0); }
+      from { clip-path: inset(50% 0 50% 0); }
+      to   { clip-path: inset(0 0 0 0); }
     }
-    /* 40% longer (0.9s -> ~1.26s) with strong ease; exit uses reverse of same curve (rollback) */
-    video.wipe-enter { animation: wipeInVertical 1.26s cubic-bezier(0.85,0.05,1,0.55) forwards; }
-    video.wipe-exit { animation: wipeInVertical 1.26s cubic-bezier(0.85,0.05,1,0.55) reverse forwards; }
+    /* Keep duration; new easing reduces mid-animation plateau. */
+    video.wipe-enter { animation: wipeInVertical 1.26s cubic-bezier(0.78,0.02,0.18,1) forwards; }
+    video.wipe-exit  { animation: wipeInVertical 1.26s cubic-bezier(0.78,0.02,0.18,1) reverse forwards; }
   video.wipe-prep { clip-path: inset(50% 0 50% 0) !important; }
     /* During wipe we keep video visible but may hide controls separately */
   /* Hide admin-only controls on viewer (non /admin path) via body:not(.is-admin) marker (added in script). */
@@ -715,9 +710,11 @@
           if (j && Array.isArray(j.tracks)) {
             audioTracksMeta = j.tracks.map((t,i)=>({logical:i, ...t}));
             sidecarMode = audioTracksMeta.some(t=> t.kind==='sidecar');
-            // pick default else first
-            const def = audioTracksMeta.find(t=>t.default) || audioTracksMeta[0];
-            if (def) currentAudioLogical = def.logical; else currentAudioLogical = null;
+            // Initial default selection preference: Japanese (jpn/ja) first if present, else track flagged default, else first.
+            const jp = audioTracksMeta.find(t=> /^(jpn|ja|japanese)$/.test((t.lang||'').toLowerCase()));
+            const defFlag = audioTracksMeta.find(t=> t.default);
+            const chosen = jp || defFlag || audioTracksMeta[0];
+            currentAudioLogical = chosen ? chosen.logical : null;
             applyAudioSelection();
           }
         } catch {}
@@ -783,6 +780,13 @@
         if (!audioTracksMeta.length) { loadAudioTracks(); return; }
         if (currentAudioLogical==null) currentAudioLogical=0; else currentAudioLogical = (currentAudioLogical+1) % audioTracksMeta.length;
         applyAudioSelection(); updateAudioBtn(); showToast('Audio: ' + friendlyAudioLabel(audioTracksMeta.find(t=>t.logical===currentAudioLogical)));
+      };
+      // Expose a global helper to forcibly stop & remove sidecar audio (used on unload transitions for viewers)
+      window.stopSidecarAudio = function(){
+        try {
+          if(sidecarAudioEl){ sidecarAudioEl.pause(); sidecarAudioEl.remove(); }
+        } catch{}
+        sidecarAudioEl=null; sidecarLang=null; sidecarMode = false;
       };
       // Maintain sidecar play/pause sync
       video.addEventListener('play', ()=>{ if(sidecarMode && sidecarAudioEl){ const p=sidecarAudioEl.play(); if(p&&p.catch)p.catch(()=>{}); }});
@@ -1020,6 +1024,9 @@
           if (wasPlayingMedia) {
             // Begin starfield behind video before collapsing so wipe reveals it
             if (typeof startStarfield === 'function') startStarfield();
+            // Immediately stop any audio (embedded or sidecar) for viewers to avoid lingering sound
+            try { if(!isAdmin){ video.pause(); video.muted = true; } } catch {}
+            try { if(typeof window.stopSidecarAudio==='function') window.stopSidecarAudio(); } catch {}
             // Defer src unload until after wipe completes to preserve last frame during animation
             triggerWipeExit(() => {
               try {
@@ -1224,7 +1231,7 @@
     updateFloatingVisibility();
     // Chat toggle after initial state
     setTimeout(() => { const btn = document.getElementById('customCtr')?.querySelector('button:last-child'); updateChatToggle(); }, 0);
-  function wsMessage(ev){ try { const msg = JSON.parse(ev.data); if (msg.type === 'state') { log('state', msg.data); applyState(msg.data); } else if (msg.type === 'toast') { if (msg.text === 'Pause requested' && !isAdmin) { /* suppress viewer toast */ } else { showToast(msg.text || ''); } } else if (msg.type === 'pong') { const now = Date.now(); if (lastPingSent) { const rtt = now - lastPingSent; latencyMs = Math.max(0, Math.round(rtt / 2)); } schedulePing(); } else if (msg.type === 'presence') { setUsers(msg.users); } else if (msg.type === 'chat-history') { msg.items.forEach(it => { if (it.type === 'chat') { appendChat(it); pushFloatingChat(it); } else if (it.type === 'system') appendSystem(it); }); } else if (msg.type === 'chat') { appendChat(msg); pushFloatingChat(msg); } else if (msg.type === 'system') { appendSystem(msg); } else if (msg.type === 'self') { appendSelfNotice(msg.id, msg.name, msg.color); currentSelf = msg; refreshNameButton(); } else if (msg.type === 'rename-result') { console.log('[rename-result]', msg); if (msg.ok) { showToast('Name updated'); } else { if (msg.reason === 'in-use') showToast('Color in use'); else if (msg.reason === 'unchanged') showToast('No change'); else showToast('Rename failed'); } } } catch (e) { log('bad msg', e); } }
+  function wsMessage(ev){ try { const msg = JSON.parse(ev.data); if (msg.type === 'state') { log('state', msg.data); applyState(msg.data); } else if (msg.type === 'toast') { if (msg.text === 'Pause requested' && !isAdmin) { /* suppress viewer toast */ } else { showToast(msg.text || ''); } } else if (msg.type === 'pong') { const now = Date.now(); if (lastPingSent) { const rtt = now - lastPingSent; latencyMs = Math.max(0, Math.round(rtt / 2)); } schedulePing(); } else if (msg.type === 'presence') { setUsers(msg.users); } else if (msg.type === 'chat-history') { msg.items.forEach(it => { if (it.type === 'chat') { appendChat(it); pushFloatingChat(it); } else if (it.type === 'system') appendSystem(it); }); } else if (msg.type === 'chat') { appendChat(msg); pushFloatingChat(msg); } else if (msg.type === 'system') { appendSystem(msg); } else if (msg.type === 'self') { appendSelfNotice(msg.id, msg.name, msg.color); currentSelf = msg; refreshNameButton(); } else if (msg.type === 'rename-result') { console.log('[rename-result]', msg); if (msg.ok) { if (currentSelf) { if (msg.name) currentSelf.name = msg.name; if (msg.color) currentSelf.color = msg.color; } refreshNameButton(); showToast('Name updated'); } else { if (msg.reason === 'in-use') showToast('Color in use'); else if (msg.reason === 'unchanged') showToast('No change'); else showToast('Rename failed'); } } } catch (e) { log('bad msg', e); } }
 
     // Rename popup UI
     // currentSelf already declared earlier
@@ -1240,10 +1247,29 @@
       box.style.cssText = 'background:#11161c;padding:18px 22px;border-radius:10px;max-width:420px;width:100%;color:#e6e9ec;font:13px system-ui;box-shadow:0 4px 22px rgba(0,0,0,.6);';
       box.innerHTML = '<h3 style="margin:0 0 10px;font:600 15px system-ui">Choose a Character</h3>';
       const form = document.createElement('form'); form.style.display = 'grid'; form.style.gridTemplateColumns = '1fr 1fr'; form.style.gap = '6px 14px';
-      (CHAR_PALETTE.length ? CHAR_PALETTE : ['frieren', 'himmel', 'heiter', 'eisen', 'fern', 'stark', 'sein', 'übel']).forEach(c => {
+      const nameRow = document.createElement('div');
+      nameRow.style.cssText = 'grid-column:1 / span 2; display:flex; flex-direction:column; gap:6px; margin:2px 0 8px;';
+      const nameLabel = document.createElement('label'); nameLabel.textContent = 'Custom name'; nameLabel.style.cssText = 'font:600 12px system-ui; letter-spacing:.3px;';
+      const nameInput = document.createElement('input');
+      nameInput.type = 'text'; nameInput.maxLength = 40; nameInput.placeholder = 'Enter a display name (optional)';
+      nameInput.style.cssText = 'background:#0d1216;border:1px solid #25313b;border-radius:6px;padding:8px 10px;color:#e6e9ec;font:13px system-ui;';
+      nameRow.appendChild(nameLabel); nameRow.appendChild(nameInput); form.appendChild(nameRow);
+      const palette = (CHAR_PALETTE.length ? CHAR_PALETTE : ['frieren', 'himmel', 'heiter', 'eisen', 'fern', 'stark', 'sein', 'übel']);
+      palette.forEach(c => {
         const id = 'c_' + c; const label = document.createElement('label'); label.style.display = 'flex'; label.style.alignItems = 'center'; label.style.gap = '6px'; label.style.cursor = 'pointer';
         label.innerHTML = `<input type=\"radio\" name=\"color\" value=\"${c}\" id=\"${id}\" style=\"accent-color:${colorHexMap[c]}\" ${(currentSelf.color === c) ? 'checked' : ''}> <img src="${spriteImg(c)}" style="width:18px;height:18px;object-fit:contain;image-rendering:crisp-edges;"> <span style=\"color:${colorHexMap[c]};font-weight:600\">${c}</span>`;
         form.appendChild(label);
+      });
+      // Initialize name input with current display name
+      try { nameInput.value = currentSelf.name || (currentSelf.color || ''); } catch {}
+      // Update name field when radio selection changes if user hasn't edited manually yet
+      let namePristine = true;
+      nameInput.addEventListener('input', ()=>{ namePristine = false; });
+      form.addEventListener('change', e => {
+        if (e.target && e.target.name === 'color' && namePristine) {
+          const val = e.target.value;
+            nameInput.value = val;
+        }
       });
       const actions = document.createElement('div'); actions.style.cssText = 'grid-column:1 / span 2;display:flex;justify-content:flex-end;gap:10px;margin-top:10px;';
       const cancel = document.createElement('button'); cancel.type = 'button'; cancel.textContent = 'Cancel'; cancel.style.cssText = 'all:unset;background:#25313b;padding:6px 12px;border-radius:6px;cursor:pointer;'; cancel.onmouseenter = () => cancel.style.background = '#2d3a45'; cancel.onmouseleave = () => cancel.style.background = '#25313b';
@@ -1251,11 +1277,17 @@
       actions.appendChild(cancel); actions.appendChild(save); form.appendChild(actions); box.appendChild(form); wrap.appendChild(box); document.body.appendChild(wrap);
       cancel.onclick = () => { console.log('[rename-popup] cancel'); wrap.remove(); };
       save.addEventListener('click', () => console.log('[rename-popup] save click (pre-submit)'));
-      form.addEventListener('submit', e => { e.preventDefault(); console.log('[rename-popup] submit'); const fd = new FormData(form); const color = fd.get('color'); console.log('[rename-popup] selected', color); if (color && ws.readyState === 1) { console.log('[rename-popup] sending rename'); ws.send(JSON.stringify({ type: 'rename', color })); } else { console.log('[rename-popup] not sent (missing color or ws not open)'); } wrap.remove(); });
+  form.addEventListener('submit', e => { e.preventDefault(); console.log('[rename-popup] submit'); const fd = new FormData(form); const color = fd.get('color'); const name = nameInput.value.trim(); console.log('[rename-popup] selected', color, 'name', name); if (color && ws.readyState === 1) { console.log('[rename-popup] sending rename'); ws.send(JSON.stringify({ type: 'rename', color, name })); } else { console.log('[rename-popup] not sent (missing color or ws not open)'); } wrap.remove(); });
     }
     renameBtn.onclick = () => openRename();
   // (duplicate onclose assignment removed – handled in createSocket)
-  function send(type, extra = {}) { if (!isAdmin) return; if (!ws || ws.readyState !== 1) return; const payload = { type, key: ADMIN_KEY, time: video.currentTime, ...extra }; log('send', payload); ws.send(JSON.stringify(payload)); }
+  function send(type, extra = {}) {
+    if (!isAdmin) return;
+    if (!ws || ws.readyState !== 1) return;
+    const payload = { type, key: ADMIN_KEY, t: video.currentTime, ...extra };
+    log('send', payload);
+    try { ws.send(JSON.stringify(payload)); } catch {}
+  }
     function schedulePing() { lastPingSent = Date.now(); if (ws.readyState === 1) { ws.send(JSON.stringify({ type: 'ping' })); } }
     function schedulePing() { lastPingSent = Date.now(); if (ws.readyState === 1) { ws.send(JSON.stringify({ type: 'ping' })); } }
     function pingLoop(){
@@ -1265,13 +1297,18 @@
     }
   function wsMessage(ev){ try { const msg = JSON.parse(ev.data); if (msg.type === 'state') { log('state', msg.data); applyState(msg.data); } else if (msg.type === 'toast') { if (msg.text === 'Pause requested' && !isAdmin) { /* suppress viewer toast */ } else { showToast(msg.text || ''); } } else if (msg.type === 'pong') { const now = Date.now(); if (lastPingSent) { const rtt = now - lastPingSent; latencyMs = Math.max(0, Math.round(rtt / 2)); log('pong rtt', rtt, 'lat', latencyMs); } } else if (msg.type === 'presence') { setUsers(msg.users); } else if (msg.type === 'chat-history') { msg.items.forEach(it => { if (it.type === 'chat') { appendChat(it); pushFloatingChat(it); } else if (it.type === 'system') appendSystem(it); }); } else if (msg.type === 'chat') { appendChat(msg); pushFloatingChat(msg); } else if (msg.type === 'system') { appendSystem(msg); } else if (msg.type === 'self') { appendSelfNotice(msg.id, msg.name, msg.color); currentSelf = msg; refreshNameButton(); } else if (msg.type === 'rename-result') { console.log('[rename-result]', msg); if (msg.ok) { showToast('Name updated'); } else { if (msg.reason === 'in-use') showToast('Color in use'); else if (msg.reason === 'unchanged') showToast('No change'); else showToast('Rename failed'); } } } catch (e) { log('bad msg', e); } }
     // Admin-originated events
+    // Admin-originated playback events propagate currentTime via payload.t set inside send()
     video.addEventListener('play', () => { if (!suppress) send('play'); });
     video.addEventListener('pause', () => { if (!suppress) send('pause'); });
-    let lastSeekSent = 0; video.addEventListener('seeked', () => { if (suppress || !isAdmin) return; const now = Date.now(); if (now - lastSeekSent > 150) { send('seek'); lastSeekSent = now; } });
+    let lastSeekSent = 0; video.addEventListener('seeked', () => {
+      if (suppress || !isAdmin) return;
+      const now = Date.now();
+      if (now - lastSeekSent > 150) { send('seek'); lastSeekSent = now; }
+    });
     // Periodic drift correction (every 5s) for viewers
     setInterval(() => { if (isAdmin) return; if (lastState) { log('periodic reapply'); applyState(lastState); } }, 5000);
     // Admin periodic tick (position updates while playing)
-    setInterval(() => { if (!isAdmin) return; if (video.paused) return; send('tick'); }, 1000);
+  setInterval(() => { if (!isAdmin) return; if (video.paused) return; send('tick'); }, 1000);
     // Extra logging around play/pause events
     video.addEventListener('timeupdate', () => { if (isAdmin && !video.paused && ws.readyState === 1) {/* light */ } });
     // Auto acquire admin key in dev mode
