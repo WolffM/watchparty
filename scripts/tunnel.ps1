@@ -22,7 +22,11 @@ Security note:
 #>
 Param(
   [int] $PreferredPort = 3000,
-  [switch] $Quiet
+  [switch] $Quiet,
+  [switch] $CopyUrl,              # Copy tunnel URL to clipboard when captured
+  [int] $RepeatPrintSeconds = 20, # Re-echo the tunnel URL every N seconds so it isn't lost behind other output
+  [switch] $NoPersist,            # Do not write tunnel.latest.txt
+  [switch] $FilterOutput          # Suppress noisy connectivity probe lines (Test-NetConnection banner)
 )
 
 function Get-FreePort {
@@ -86,15 +90,57 @@ if (-not $serverUp) {
 if (-not $Quiet) { Write-Host 'Launching Cloudflare quick tunnel...' -ForegroundColor Yellow }
 
 $tunnelUrl = $null
-# We stream output and capture the first trycloudflare URL
-& cloudflared tunnel --url "http://localhost:$($env:PORT)" 2>&1 | ForEach-Object {
-  $_
-  if (-not $tunnelUrl -and $_ -match 'https://[a-z0-9-]+\.trycloudflare\.com') {
-    $tunnelUrl = $Matches[0]
-    Write-Host "\n=== TUNNEL READY ===" -ForegroundColor Cyan
-  Write-Host "Public URL (viewer):    $tunnelUrl" -ForegroundColor Green
-  Write-Host "Admin URL (control):    $tunnelUrl/admin?admin=$($env:ADMIN_KEY)" -ForegroundColor Green
-    Write-Host "(Keep admin key private; only share viewer URL)" -ForegroundColor DarkGray
-    Write-Host "Press Ctrl+C to stop tunnel (server keeps running if started earlier)." -ForegroundColor DarkGray
+$stateDir = Join-Path $repoRoot 'state'
+if (-not (Test-Path $stateDir)) { try { New-Item -ItemType Directory -Path $stateDir | Out-Null } catch {} }
+$tunnelFile = Join-Path $stateDir 'tunnel.latest.txt'
+
+# Helper to emit + persist + optional clipboard
+function Show-TunnelInfo {
+  param([string]$Url)
+  if (-not $Url) { return }
+  Write-Host "`n=== TUNNEL READY ===" -ForegroundColor Cyan
+  Write-Host "Public URL (viewer):    $Url" -ForegroundColor Green
+  Write-Host "Admin URL (control):    $Url/admin?admin=$($env:ADMIN_KEY)" -ForegroundColor Green
+  Write-Host "(Keep admin key private; only share viewer URL)" -ForegroundColor DarkGray
+  Write-Host "Press Ctrl+C to stop tunnel (server keeps running if started earlier)." -ForegroundColor DarkGray
+  if (-not $NoPersist) {
+    try {
+      $viewer = $Url
+      $admin  = "$Url/admin?admin=$($env:ADMIN_KEY)"
+      Set-Content -Path $tunnelFile -Value @($viewer,$admin) -ErrorAction SilentlyContinue
+    } catch {}
   }
+  if ($CopyUrl) {
+    try { Set-Clipboard -Value $Url -ErrorAction Stop; Write-Host '(Copied viewer URL to clipboard)' -ForegroundColor DarkGray } catch { Write-Host '(Clipboard copy failed)' -ForegroundColor DarkYellow }
+  }
+}
+
+# Start a background re-print timer once URL captured
+$reprintJob = $null
+
+& cloudflared tunnel --loglevel warn --url "http://localhost:$($env:PORT)" 2>&1 | ForEach-Object {
+  $line = $_
+  if ($FilterOutput -and ($line -match 'Test-NetConnection' -or $line -match 'Attempting TCP connect' -or $line -match 'Waiting for response')) { return }
+  $line
+  if (-not $tunnelUrl -and $line -match 'https://[a-z0-9-]+\.trycloudflare\.com') {
+    $tunnelUrl = $Matches[0]
+    Show-TunnelInfo -Url $tunnelUrl
+    if ($RepeatPrintSeconds -gt 0) {
+      $script:reprintJob = Start-Job -ScriptBlock {
+        param($Url,$Interval,$File)
+        while ($true) {
+          Start-Sleep -Seconds $Interval
+          try {
+            Write-Host "`n[Tunnel] Viewer: $Url" -ForegroundColor Green
+            Write-Host "[Tunnel] Admin : $Url/admin?admin=<hidden>" -ForegroundColor Green
+            if ($File -and (Test-Path $File)) { Write-Host "[Tunnel] File : $File" -ForegroundColor DarkGray }
+          } catch {}
+        }
+      } -ArgumentList $tunnelUrl,$RepeatPrintSeconds,$tunnelFile | Out-Null
+    }
+  }
+}
+
+if ($reprintJob) {
+  try { Register-EngineEvent PowerShell.Exiting -Action { try { Stop-Job -Job $reprintJob -Force -ErrorAction SilentlyContinue } catch {} } | Out-Null } catch {}
 }

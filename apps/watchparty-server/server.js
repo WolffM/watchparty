@@ -92,18 +92,23 @@ function sendChatHistory(socket){
 wss.on('close', ()=>{}); // noop placeholder (avoid accidental removal if refactoring)
 
 wss.on('connection', (socket, req) => {
-  // Require admin key in query (?admin=KEY) for ALL clients (viewer & admin)
+  // Accept either ?key= or legacy ?admin= for ALL websocket clients.
   try {
-    const q = new URL(req.url, 'http://x').searchParams;
-    const supplied = q.get('admin');
+    const u = new URL(req.url, 'http://ws');
+    const supplied = u.searchParams.get('key') || u.searchParams.get('admin');
     if (supplied !== ADMIN_KEY && supplied !== 'auto') {
       console.log('[ws] unauthorized connection');
       socket.close(1008, 'unauthorized');
       return;
     }
   } catch {}
-  const isAdminClient = req.url.startsWith('/admin');
-  const meta = { id: nextClientId++, color: assignColor(), lastSeen: Date.now(), msgTimes: [], isAdmin: isAdminClient };
+  // Admin if path starts with /admin or new /watchparty-admin
+  let isAdminClient = false;
+  try {
+    const pth = req.url.split('?')[0];
+    isAdminClient = pth.startsWith('/admin') || pth.startsWith('/watchparty-admin');
+  } catch {}
+  const meta = { id: nextClientId++, color: assignColor(), lastSeen: Date.now(), msgTimes: [], isAdmin: isAdminClient, connectAt: Date.now(), lastPos: null };
   clientMeta.set(socket, meta);
   console.log('[ws] client connected', meta.id, 'color=', meta.color);
   socket.send(JSON.stringify({ type: 'state', data: lastBroadcast }));
@@ -137,9 +142,9 @@ wss.on('connection', (socket, req) => {
         // Accept optional color & name; enforce uniqueness of color
         const newColor = msg.color && typeof msg.color === 'string' ? msg.color.toLowerCase() : null;
         let newNameRaw = msg.name && typeof msg.name === 'string' ? msg.name : '';
-        if (newNameRaw.length > 40) newNameRaw = newNameRaw.slice(0,40);
-        // Sanitize name: allow letters/numbers/basic punctuation + spaces
-        let newName = newNameRaw.replace(/[^\w \-'.!?,]/g,'').trim();
+        if (newNameRaw.length > 80) newNameRaw = newNameRaw.slice(0,80);
+        // Unicode-aware sanitize: allow letters (with diacritics), numbers, spaces & limited punctuation
+        let newName = newNameRaw.normalize('NFC').replace(/[^\p{L}\p{N} \-'.!?,]/gu,'').trim();
         if (newName.length > 40) newName = newName.slice(0,40);
         let changed = false;
         if (newColor && COLOR_PALETTE.includes(newColor) && newColor !== meta.color) {
@@ -208,13 +213,19 @@ wss.on('connection', (socket, req) => {
           broadcastState();
         }
         break; }
+      case 'pos': {
+        if (typeof msg.t === 'number' && msg.t >= 0) {
+          meta.lastPos = { t: msg.t, ts: now };
+        }
+        break; }
       case 'tick': {
-        if (typeof msg.t === 'number' && msg.t >= 0 && !lastBroadcast.paused) {
-          // drift correction: if remote ahead by >0.25s advance reference
-            if (msg.t > lastBroadcast.t + 0.25) {
-              lastBroadcast = { t: msg.t, paused:false, ts: now, rev: mediaRev, path: mediaRel };
-              broadcastState();
-            }
+        // Deprecated: admin no longer sends periodic ticks (kept for backward compatibility / no-op)
+        break; }
+      case 'drift-alert': {
+        if (meta.isAdmin) break; // ignore admin self reports
+        if (typeof msg.drift === 'number' && Math.abs(msg.drift) > 30) {
+          // Ephemeral admin-only notice (not stored in history)
+          pushSystemAdmin(`User ${displayName(meta)} drifted ${msg.drift.toFixed(1)}s`);
         }
         break; }
     }
@@ -231,8 +242,7 @@ wss.on('connection', (socket, req) => {
   });
 });
 
-// Optional heartbeat broadcast every 5s to keep idle clients synced
-setInterval(()=>{ if (!mediaFile) return; broadcastState(); }, 5000);
+// Removed periodic heartbeat broadcast (sync now only on admin actions / joins)
 
 // Presence timeout sweeper
 setInterval(()=>{
@@ -259,7 +269,14 @@ app.get('/api/debug/clients', (_req,res)=>{
   const now = Date.now();
   const clients = [];
   for (const [sock, meta] of clientMeta.entries()) {
-    clients.push({ id: meta.id, color: meta.color, isAdmin: !!meta.isAdmin, idleMs: now - meta.lastSeen });
+    let drift = null;
+    if (meta.lastPos && mediaFile && !lastBroadcast.paused) {
+      // compute expected position
+      let expected = lastBroadcast.t;
+      let delta = (now - lastBroadcast.ts)/1000; if(delta<0) delta=0; if(!lastBroadcast.paused) expected += delta;
+      drift = meta.lastPos.t - expected;
+    }
+    clients.push({ id: meta.id, color: meta.color, name: displayName(meta), isAdmin: !!meta.isAdmin, idleMs: now - meta.lastSeen, connectedMs: now - meta.connectAt, drift });
   }
   res.json({ count: clients.length, clients });
 });
@@ -363,10 +380,15 @@ function resolveMedia(rel){
 // Startup: DO NOT auto-load first media; begin on "home" (starfield) until admin selects a file.
 console.log('[media] starting with no media loaded (home screen)');
 
-// Auth gate for index: require ?admin=KEY (or ?admin=auto in non-prod) even for viewer mode
+// Auth gate for index: require ?key=KEY (or legacy ?admin=KEY / auto) even for viewer mode.
+// Also respect an offline sentinel file (state/offline.flag) to force 404 responses without stopping process.
 const publicDir = path.join(__dirname, 'public');
+const offlineFlag = path.join(process.cwd(),'state','offline.flag');
+function isOffline(){ try { return fs.existsSync(offlineFlag); } catch { return false; } }
+// Global offline kill-switch (returns 404 for everything when state/offline.flag exists)
+app.use((req,res,next)=>{ if(isOffline()) { return res.status(404).send('Not Found'); } next(); });
 function authGate(req, res, next){
-  const supplied = req.query.admin;
+  const supplied = req.query.key || req.query.admin; // support both param names
   if (supplied === ADMIN_KEY || supplied === 'auto') return next();
   const wanted = req.path === '/' ? '/' : req.path;
   // Inline starfield so animation is visible BEFORE key entry.
@@ -395,8 +417,20 @@ function authGate(req, res, next){
   <script>(function(){var c=document.getElementById('sf');if(!c)return;var ctx=c.getContext('2d');function rs(){c.width=innerWidth;c.height=innerHeight;}addEventListener('resize',rs);rs();var stars=[];var N=Math.min(1400,Math.floor(c.width*c.height/2400));for(var i=0;i<N;i++){stars.push({x:Math.random()*2-1,y:Math.random()*2-1,z:Math.random(),s:0.00018+Math.random()*0.00042});}var last=0;function step(ts){if(!last)last=ts;var dt=Math.min(60,ts-last);last=ts;ctx.fillStyle='#000';ctx.fillRect(0,0,c.width,c.height);var w=c.width,h=c.height,cx=w/2,cy=h/2;for(var s of stars){s.z-=s.s*dt;if(s.z<=0.0005){s.x=Math.random()*2-1;s.y=Math.random()*2-1;s.z=1;}var k=1/s.z,px=s.x*k*cx+cx,py=s.y*k*cy+cy;if(px>=0&&px<w&&py>=0&&py<h){var r=Math.max(.4,1.7*(1-s.z));ctx.fillStyle='rgba(255,255,255,'+(1.15*(1-s.z)).toFixed(3)+')';ctx.beginPath();ctx.arc(px,py,r,0,6.283);ctx.fill();}}requestAnimationFrame(step);}requestAnimationFrame(step);})();</script>
   </body></html>`);
 }
-app.get(['/', '/index.html'], authGate, (req,res)=> res.sendFile(path.join(publicDir,'index.html')));
+// Root redirect: send bare domain to /watchparty (no key param). If root has key/admin, preserve it.
+app.get('/', (req,res,next)=>{
+  const supplied = req.query.key || req.query.admin;
+  if (!supplied) return res.redirect(302, '/watchparty');
+  // If key present on root, redirect to canonical /watchparty preserving query string.
+  const qs = Object.keys(req.query).length ? ('?' + new URLSearchParams(req.query).toString()) : '';
+  return res.redirect(302, '/watchparty' + qs);
+});
+// Legacy /index.html still allowed (auth gated)
+app.get(['/index.html'], authGate, (req,res)=> res.sendFile(path.join(publicDir,'index.html')));
 app.get(['/admin','/admin.html'], authGate, (req,res)=> res.sendFile(path.join(publicDir,'index.html')));
+// New desired pretty paths
+app.get(['/watchparty','/watchparty/','/watchparty/index.html'], authGate, (req,res)=> res.sendFile(path.join(publicDir,'index.html')));
+app.get(['/watchparty-admin','/watchparty-admin/','/watchparty-admin/index.html'], authGate, (req,res)=> res.sendFile(path.join(publicDir,'index.html')));
 // Static assets (JS/CSS/media fetches) remain open; gate is only entry HTML + websocket + admin actions
 app.use(express.static(publicDir));
 // Serve character sprite images (read-only)
