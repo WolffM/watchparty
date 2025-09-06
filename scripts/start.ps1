@@ -59,6 +59,12 @@ if (-not $env:ADMIN_KEY -or [string]::IsNullOrWhiteSpace($env:ADMIN_KEY)) {
 $stateDir = Join-Path $repoRoot 'state'
 if (-not (Test-Path $stateDir)) { try { New-Item -ItemType Directory -Path $stateDir | Out-Null } catch {} }
 $adminKeyFile = Join-Path $stateDir 'admin.key'
+## Clear offline flag (was set by shutdown/takedown scripts) so local dev serves content
+$offlineFlag = Join-Path $stateDir 'offline.flag'
+if (Test-Path $offlineFlag) {
+  try { Remove-Item $offlineFlag -ErrorAction SilentlyContinue } catch {}
+  if (-not $Quiet) { Write-Host "Cleared offline.flag (local dev online)" -ForegroundColor Green }
+}
 try { Set-Content -Path $adminKeyFile -Value $env:ADMIN_KEY -NoNewline } catch { if (-not $Quiet) { Write-Host "(Failed to save admin.key: $($_.Exception.Message))" -ForegroundColor DarkRed } }
 if ((Test-Path $adminKeyFile) -and -not $Quiet) { Write-Host "(Saved ADMIN_KEY to $adminKeyFile)" -ForegroundColor DarkGray }
 
@@ -158,8 +164,6 @@ if (-not $existing) {
 
 Write-Host "Local Viewer URL:  http://localhost:$($env:PORT)/watchparty?key=$($env:ADMIN_KEY)" -ForegroundColor Cyan
 Write-Host "Local Admin URL:   http://localhost:$($env:PORT)/watchparty-admin?key=$($env:ADMIN_KEY)" -ForegroundColor Cyan
-Write-Host "Legacy Viewer URL: http://localhost:$($env:PORT)/?admin=$($env:ADMIN_KEY)" -ForegroundColor DarkGray
-Write-Host "Legacy Admin URL:  http://localhost:$($env:PORT)/admin?admin=$($env:ADMIN_KEY)" -ForegroundColor DarkGray
 
 if ($serverProc) {
   Write-Host "Press Ctrl+C to exit wrapper (server keeps running)." -ForegroundColor DarkGray

@@ -1,0 +1,67 @@
+/* Theme constants (colors, fonts, spacing) for Watchparty UI */
+:root {
+  /* Color Scheme */
+  color-scheme: dark;
+
+  /* Base Palette */
+  --color-black: #000;
+  --color-white: #fff;
+  --color-text-primary: #e6e9ec;
+  --color-text-secondary: #e6e6e6; /* legacy body text */
+  --color-text-inverse: #fff;
+  --color-text-muted: #888;
+  --color-text-warn: #ffb347;
+  --color-subtitle-yellow: #ffd400;
+  --color-success: #2fa865;
+  --color-danger: #c33;
+
+  /* Panels / Surfaces (ordered by elevation / lightness) */
+  --color-surface-0: #000;        /* video bg */
+  --color-surface-1: #0d1216;     /* input bg */
+  --color-surface-2: #11161c;     /* primary panel */
+  --color-surface-3: #1a232b;     /* row / chip bg */
+  --color-surface-4: #1e2730;     /* button / collapse */
+  --color-surface-5: #121a21;     /* chat header alt */
+  --color-surface-log: #121417;   /* log panel */
+
+  /* Interactive / Buttons */
+  --color-accent: #2e78d2;
+  --color-accent-hover: #2463ad;
+  --color-btn-neutral: #27313d;
+  --color-btn-neutral-hover: #324153;
+  --color-btn-neutral-active: #3a4c61;
+  --color-chip: #222;
+  --color-chip-hover: #2b2b2b;
+  --color-chip-outline-hover: #2d3a45;
+  --color-row-hover: #223240;
+
+  /* Borders */
+  --color-border-primary: #222a32;
+  --color-border-accent: #25313b;
+  --color-border-neutral: #333;
+  --color-border-neutral-strong: #444;
+  --color-border-log: #252a31;
+
+  /* Overlays / translucency */
+  --overlay-55: rgba(0,0,0,.55);
+  --overlay-50: rgba(0,0,0,.5);
+  --overlay-60: rgba(0,0,0,.6);
+  --overlay-65: rgba(0,0,0,.65);
+  --overlay-70: rgba(0,0,0,.7);
+  --overlay-75: rgba(0,0,0,.75);
+
+  /* Shadows */
+  --shadow-lg: 0 4px 22px rgba(0,0,0,.6);
+  --shadow-xl: 0 6px 30px rgba(0,0,0,.55);
+  --shadow-toast: 0 4px 20px rgba(0,0,0,.5);
+
+  /* Fonts */
+  --font-stack: system-ui,sans-serif;
+  --font-stack-mono: ui-monospace,SFMono-Regular,Menlo,monospace;
+  --fs-11: 11px;
+  --fs-12: 12px;
+  --fs-13: 13px;
+  --fs-14: 14px;
+  --fs-15: 15px;
+  --fs-16: 16px;
+}

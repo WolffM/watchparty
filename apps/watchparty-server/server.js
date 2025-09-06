@@ -4,7 +4,14 @@ import fs from 'fs';
 import { fileURLToPath } from 'url';
 import http from 'http';
 import { WebSocketServer } from 'ws';
-import { spawnSync } from 'child_process';
+import config from './config.js';
+import episodeKeyFromName from './lib/episode.js';
+import { resolveMedia, listMedia } from './lib/media-listing.js';
+import { probeAudioStreams } from './lib/audio-probe.js';
+import { buildSubtitleResponse, enumerateSubtitleTracks } from './lib/subtitles.js';
+import { logTelemetry, makeWsSend, systemLog, TELEMETRY_EVENTS } from './lib/logging.js';
+import { validateAccess } from './lib/auth.js';
+import { renderTemplate } from './lib/templates.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -18,32 +25,38 @@ let mediaRel = null;       // relative path under media root (null means no medi
 let mediaRev = 0;          // incremented when media changes
 let lastBroadcast = { t: 0, paused: true, ts: Date.now(), rev: mediaRev, path: mediaRel }; // initial home state
 const ADMIN_KEY = process.env.ADMIN_KEY || 'dev';
+// Future multi-room scaffold (Phase 4 placeholder). We keep a single implicit room keyed by ADMIN_KEY.
+// Map shape: roomId -> { mediaFile, mediaRel, mediaRev, lastBroadcast }
+// NOT used yet for isolation; retained so future extension only rewires accessors.
+const rooms = new Map();
+rooms.set(ADMIN_KEY, { get mediaFile(){ return mediaFile; }, get mediaRel(){ return mediaRel; }, get mediaRev(){ return mediaRev; }, get lastBroadcast(){ return lastBroadcast; } });
+
+function getRoomState(roomId){
+  // For now always return global; roomId unused aside from shape compliance.
+  return { mediaFile, mediaRel, mediaRev, lastBroadcast };
+}
 
 // Chat / Presence data structures (character slots in assignment order)
 // Assignment order with display names including umlaut: Frieren, Himmel, Heiter, Eisen, Fern, Stark, Sein, Übel
 // Internal key uses exact display (with Ü). We'll normalize incoming values.
-const COLOR_PALETTE = ['frieren','himmel','heiter','eisen','fern','stark','sein','übel'];
-const COLOR_HEX = {
-  frieren: '#7f7c84',
-  himmel:  '#bddaf9',
-  heiter:  '#78855e',
-  eisen:   '#cfccc0',
-  fern:    '#794983',
-  stark:   '#af4a33',
-  sein:    '#936f42',
-  'übel':  '#667240'
-};
+const COLOR_PALETTE = config.roles.colorPalette;
+const COLOR_HEX = config.roles.colorHex;
 let colorsAvailable = [...COLOR_PALETTE];
-const clientMeta = new Map(); // socket -> { id, color, customName, lastSeen, msgTimes: number[], isAdmin }
+// Extended meta: bytesIn/Out + msgsIn/Out + lastRecvTs/lastSentTs for basic bandwidth stats
+const clientMeta = new Map(); // socket -> { id, color, customName, lastSeen, msgTimes: number[], isAdmin, bytesIn, bytesOut, msgsIn, msgsOut, lastRecvTs, lastSentTs, connectAt, lastPos }
 let nextClientId = 1;
+const processStartTs = Date.now();
+function genGuid(){ return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g,c=>{ const r=Math.random()*16|0, v=c==='x'?r:(r&0x3|0x8); return v.toString(16); }); }
 const chatHistory = []; // ring buffer of { type:'chat', id,name,color,text,ts }
-const CHAT_HISTORY_LIMIT = 200;
-const CHAT_HISTORY_SEND = 100;
+const CHAT_HISTORY_LIMIT = config.chat.historyLimit;
+const CHAT_HISTORY_SEND = config.chat.historySend;
 // Presence timeout (extend slightly while debugging unexpected disconnects)
-const PRESENCE_TIMEOUT_MS = 40000;
-const PRESENCE_SWEEP_INTERVAL = 10000;
-const CHAT_RATE_MAX = 5; // messages
-const CHAT_RATE_WINDOW_MS = 5000; // time window
+const PRESENCE_TIMEOUT_MS = config.presence.timeoutMs;
+const PRESENCE_SWEEP_INTERVAL = config.presence.sweepIntervalMs;
+const CHAT_RATE_MAX = config.chat.rateMax; // messages
+const CHAT_RATE_WINDOW_MS = config.chat.rateWindowMs; // time window
+// Global chat burst tracking (simple sliding window of timestamps)
+const globalChatTimes = [];
 
 function assignColor(){ if(colorsAvailable.length) return colorsAvailable.shift(); return null; }
 function releaseColor(c){ if(!c) return; if(COLOR_PALETTE.includes(c) && !colorsAvailable.includes(c)) { colorsAvailable.push(c); /* maintain original order */ colorsAvailable = COLOR_PALETTE.filter(col => colorsAvailable.includes(col)); } }
@@ -53,17 +66,24 @@ function displayName(meta){
   if (meta.color) return meta.color;
   return 'anon'+meta.id;
 }
+// wsSend now provided via logging helper factory (enables future central logging changes)
+const wsSend = makeWsSend(clientMeta);
+
+function hasActiveAdmin(){
+  for (const m of clientMeta.values()) { if (m.isAdmin) return true; }
+  return false;
+}
 function broadcastPresence(){
   const users = [];
   for (const meta of clientMeta.values()) { users.push({ id: meta.id, name: displayName(meta), color: meta.color }); }
   const payload = JSON.stringify({ type:'presence', users });
-  for (const c of wss.clients) { if (c.readyState === 1) c.send(payload); }
+  for (const c of wss.clients) { if (c.readyState === 1) wsSend(c, payload); }
 }
 function pushChat(msg){
   chatHistory.push(msg);
   if (chatHistory.length > CHAT_HISTORY_LIMIT) chatHistory.splice(0, chatHistory.length - CHAT_HISTORY_LIMIT);
   const payload = JSON.stringify(msg);
-  for (const c of wss.clients) { if (c.readyState === 1) c.send(payload); }
+  for (const c of wss.clients) { if (c.readyState === 1) wsSend(c, payload); }
 }
 function pushSystem(text){
   const now = Date.now();
@@ -76,42 +96,37 @@ function pushSystemAdmin(text){
   // deliver only to admin clients
   for (const [sock, meta] of clientMeta.entries()) {
     if (sock.readyState === 1 && meta && meta.isAdmin) {
-      try { sock.send(JSON.stringify(msg)); } catch {}
+      try { wsSend(sock, JSON.stringify(msg)); } catch {}
     }
   }
   // Do NOT store in global chat history for viewers; admins will still see it within their session
 }
 function sendSelf(socket, meta){
-  try { socket.send(JSON.stringify({ type:'self', id: meta.id, name: displayName(meta), color: meta.color })); } catch {}
+  try { wsSend(socket, JSON.stringify({ type:'self', id: meta.id, guid: meta.guid, name: displayName(meta), color: meta.color })); } catch {}
 }
 function sendChatHistory(socket){
   const items = chatHistory.slice(-CHAT_HISTORY_SEND);
-  socket.send(JSON.stringify({ type:'chat-history', items }));
+  wsSend(socket, JSON.stringify({ type:'chat-history', items }));
 }
 
 wss.on('close', ()=>{}); // noop placeholder (avoid accidental removal if refactoring)
 
 wss.on('connection', (socket, req) => {
-  // Accept either ?key= or legacy ?admin= for ALL websocket clients.
-  try {
-    const u = new URL(req.url, 'http://ws');
-    const supplied = u.searchParams.get('key') || u.searchParams.get('admin');
-    if (supplied !== ADMIN_KEY && supplied !== 'auto') {
-      console.log('[ws] unauthorized connection');
-      socket.close(1008, 'unauthorized');
-      return;
-    }
-  } catch {}
-  // Admin if path starts with /admin or new /watchparty-admin
-  let isAdminClient = false;
-  try {
-    const pth = req.url.split('?')[0];
-    isAdminClient = pth.startsWith('/admin') || pth.startsWith('/watchparty-admin');
-  } catch {}
-  const meta = { id: nextClientId++, color: assignColor(), lastSeen: Date.now(), msgTimes: [], isAdmin: isAdminClient, connectAt: Date.now(), lastPos: null };
+  let supplied=null;
+  try { const u=new URL(req.url,'http://ws'); supplied = u.searchParams.get('key') || u.searchParams.get('admin'); } catch {}
+  const auth = validateAccess({ suppliedKey: supplied, requestPath: req.url, adminKey: ADMIN_KEY });
+  if (!auth.ok){ systemLog('auth','unauthorized-connection',{ path: req.url }); socket.close(1008,'unauthorized'); return; }
+  if (auth.isAdmin && hasActiveAdmin()) { systemLog('auth','deny-second-admin',{}); try { socket.close(4003,'admin-already-active'); } catch {} return; }
+  const meta = { id: nextClientId++, guid: genGuid(), color: assignColor(), lastSeen: Date.now(), msgTimes: [], isAdmin: auth.isAdmin, connectAt: Date.now(), lastPos: null, bytesIn:0, bytesOut:0, msgsIn:0, msgsOut:0, lastRecvTs: Date.now(), lastSentTs: Date.now() };
   clientMeta.set(socket, meta);
-  console.log('[ws] client connected', meta.id, 'color=', meta.color);
-  socket.send(JSON.stringify({ type: 'state', data: lastBroadcast }));
+  // Defensive: In extremely unlikely future async refactors, re-check single-admin invariant after insertion.
+  if (meta.isAdmin) {
+    let admins = 0; for (const m of clientMeta.values()) if (m.isAdmin) admins++;
+    if (admins > 1) { systemLog('auth','post-add-second-admin-race',{}); try { socket.close(4003,'admin-already-active'); } catch {} clientMeta.delete(socket); return; }
+  }
+  systemLog('ws','client-connected',{ id: meta.id, color: meta.color, admin: meta.isAdmin });
+  systemLog('ws','client-connected',{ id: meta.id, guid: meta.guid, color: meta.color, admin: meta.isAdmin });
+  wsSend(socket, JSON.stringify({ type: 'state', data: lastBroadcast }));
   // Send presence + chat history
   sendChatHistory(socket);
   broadcastPresence();
@@ -120,23 +135,54 @@ wss.on('connection', (socket, req) => {
   sendSelf(socket, meta);
   // Message handler (playback sync, chat, media selection, presence ping)
   socket.on('message', data => {
-    let msg; try { msg = JSON.parse(data.toString()); } catch { return; }
+    const raw = data.toString();
+    let msg; try { msg = JSON.parse(raw); } catch { return; }
     const now = Date.now();
     const meta = clientMeta.get(socket); if (!meta) return;
     meta.lastSeen = now;
+    meta.msgsIn = (meta.msgsIn||0)+1;
+    meta.bytesIn = (meta.bytesIn||0) + Buffer.byteLength(raw);
+    meta.lastRecvTs = now;
     switch(msg.type){
       case 'ping':
         // Presence updated above; respond with pong so client can schedule next ping
-        try { socket.send(JSON.stringify({ type:'pong', ts: now })); } catch {}
+        try { wsSend(socket, JSON.stringify({ type:'pong', ts: now })); } catch {}
         break;
       case 'chat': {
         const text = (msg.text||'').toString().slice(0,500).trim();
         if (!text) break;
         // rate limit
         meta.msgTimes = meta.msgTimes.filter(t => now - t < CHAT_RATE_WINDOW_MS);
-        if (meta.msgTimes.length >= CHAT_RATE_MAX) { try { socket.send(JSON.stringify({ type:'error', error:'rate'})); } catch {} break; }
+        if (meta.msgTimes.length >= CHAT_RATE_MAX) {
+          // Guardrail: log once per second max per user when tripping limit
+          if (!meta._lastRateLog || (now - meta._lastRateLog) > 1000) {
+            systemLog('chat','rate-limit-hit',{ id: meta.id, color: meta.color, inWindow: meta.msgTimes.length, max: CHAT_RATE_MAX, windowMs: CHAT_RATE_WINDOW_MS });
+            systemLog('chat','rate-limit-hit',{ id: meta.id, guid: meta.guid, color: meta.color, inWindow: meta.msgTimes.length, max: CHAT_RATE_MAX, windowMs: CHAT_RATE_WINDOW_MS });
+            meta._lastRateLog = now;
+          }
+          try { wsSend(socket, JSON.stringify({ type:'error', error:'rate'})); } catch {}
+          break;
+        }
         meta.msgTimes.push(now);
+        // Global burst window prune + push
+        while (globalChatTimes.length && now - globalChatTimes[0] > CHAT_RATE_WINDOW_MS) globalChatTimes.shift();
+        globalChatTimes.push(now);
+        if (globalChatTimes.length > CHAT_RATE_MAX * 4) { // heuristic: >4x per-user max across all users in window
+          if (!globalChatTimes._lastGlobalLog || (now - globalChatTimes._lastGlobalLog) > 3000) {
+            systemLog('chat','global-burst',{ count: globalChatTimes.length, windowMs: CHAT_RATE_WINDOW_MS });
+            globalChatTimes._lastGlobalLog = now;
+          }
+        }
         pushChat({ type:'chat', id: meta.id, name: displayName(meta), color: meta.color, text, ts: now });
+        break; }
+      case 'telemetry': {
+        const ev = (msg.ev||'').toString().slice(0,80);
+        if(!ev) break;
+        let dataObj=null;
+        if (msg.data && typeof msg.data === 'object') {
+          try { dataObj = JSON.parse(JSON.stringify(msg.data)); } catch {}
+        }
+        logTelemetry(ev, meta, dataObj);
         break; }
       case 'rename': {
         // Accept optional color & name; enforce uniqueness of color
@@ -151,7 +197,7 @@ wss.on('connection', (socket, req) => {
           // ensure not in use by someone else
             let inUse = false;
             for (const m of clientMeta.values()) { if (m !== meta && m.color === newColor) { inUse = true; break; } }
-            if (inUse) { try { socket.send(JSON.stringify({ type:'rename-result', ok:false, reason:'in-use' })); } catch {} break; }
+            if (inUse) { try { wsSend(socket, JSON.stringify({ type:'rename-result', ok:false, reason:'in-use' })); } catch {} break; }
             // release old, assign new
             releaseColor(meta.color);
             meta.color = newColor;
@@ -159,8 +205,8 @@ wss.on('connection', (socket, req) => {
             changed = true;
         }
         if (newName && newName !== meta.customName) { meta.customName = newName; changed = true; }
-        if (!changed) { try { socket.send(JSON.stringify({ type:'rename-result', ok:false, reason:'unchanged' })); } catch {} break; }
-        try { socket.send(JSON.stringify({ type:'rename-result', ok:true, color: meta.color, name: displayName(meta) })); } catch {}
+  if (!changed) { try { wsSend(socket, JSON.stringify({ type:'rename-result', ok:false, reason:'unchanged' })); } catch {} break; }
+  try { wsSend(socket, JSON.stringify({ type:'rename-result', ok:true, color: meta.color, name: displayName(meta) })); } catch {}
         // update self meta to requester
         sendSelf(socket, meta);
         broadcastPresence();
@@ -168,48 +214,56 @@ wss.on('connection', (socket, req) => {
       case 'select': // deprecated in UI (was 'load')
       case 'load': {
         const isAdminMsg = (msg.admin === ADMIN_KEY || msg.key === ADMIN_KEY);
-        if (!isAdminMsg) { console.log('[ws] denied load/select (not admin)'); break; }
+  if (!isAdminMsg) { systemLog('media','deny-load-not-admin',{ id: meta.id }); break; }
         if (msg.path && typeof msg.path === 'string') {
-          const resolved = resolveMedia(msg.path);
+          const resolved = resolveMedia(mediaRoot, msg.path);
           if (resolved) {
             mediaFile = resolved.abs; mediaRel = resolved.rel; mediaRev++;
             lastBroadcast = { t:0, paused:true, ts: now, rev: mediaRev, path: mediaRel };
-            cachedAudioRev = -1; cachedAudioList = [];
-            console.log('[ws] load media', mediaRel);
+            // audio probe cache invalidation no longer needed (handled in helper)
+            systemLog('media','load',{ path: mediaRel, rev: mediaRev });
             pushSystemAdmin(`media selected: ${mediaRel}`);
             broadcastState();
           } else {
-            console.log('[ws] load failed: not found', msg.path);
+            systemLog('media','load-fail-not-found',{ requested: msg.path });
           }
         }
         break; }
       case 'unload': {
         const isAdminMsg = (msg.admin === ADMIN_KEY || msg.key === ADMIN_KEY);
-        if (!isAdminMsg) { console.log('[ws] denied unload (not admin)'); break; }
+  if (!isAdminMsg) { systemLog('media','deny-unload-not-admin',{ id: meta.id }); break; }
         if (mediaFile) {
-          console.log('[ws] unload media', mediaRel);
+          systemLog('media','unload',{ path: mediaRel, rev: mediaRev });
           mediaFile = null; mediaRel = null; mediaRev++;
           lastBroadcast = { t:0, paused:true, ts: now, rev: mediaRev, path: mediaRel };
-          cachedAudioRev = -1; cachedAudioList = [];
+          // audio probe cache invalidation no longer needed (handled in helper)
           pushSystemAdmin('media unloaded (home)');
           broadcastState();
         }
         break; }
       case 'play': {
         if (typeof msg.t === 'number' && msg.t >= 0) {
+          const prev = lastBroadcast;
           lastBroadcast = { t: msg.t, paused:false, ts: now, rev: mediaRev, path: mediaRel };
+          systemLog('media','play',{ fromT: prev.t, toT: lastBroadcast.t, rev: mediaRev });
           broadcastState();
         }
         break; }
       case 'pause': {
         if (typeof msg.t === 'number' && msg.t >= 0) {
+          const prev = lastBroadcast;
           lastBroadcast = { t: msg.t, paused:true, ts: now, rev: mediaRev, path: mediaRel };
+          systemLog('media','pause',{ fromT: prev.t, toT: lastBroadcast.t, rev: mediaRev });
           broadcastState();
         }
         break; }
       case 'seek': {
         if (typeof msg.t === 'number' && msg.t >= 0) {
-          lastBroadcast = { t: msg.t, paused: !!msg.paused, ts: now, rev: mediaRev, path: mediaRel };
+          const prev = lastBroadcast;
+          // Preserve previous paused state if client didn't explicitly send one (older clients)
+          const pausedFlag = (typeof msg.paused === 'boolean') ? msg.paused : prev.paused;
+          lastBroadcast = { t: msg.t, paused: pausedFlag, ts: now, rev: mediaRev, path: mediaRel };
+          systemLog('media','seek',{ fromT: prev.t, toT: lastBroadcast.t, paused: lastBroadcast.paused, rev: mediaRev });
           broadcastState();
         }
         break; }
@@ -233,24 +287,33 @@ wss.on('connection', (socket, req) => {
   socket.on('close', (code, reasonBuf)=>{
     let reason = '';
     try { if (reasonBuf) reason = reasonBuf.toString(); } catch {}
-    console.log('[ws] client closed', meta.id, 'code=', code, 'reason=', reason);
+  systemLog('ws','client-closed',{ id: meta.id, code, reason });
     const m = clientMeta.get(socket);
   if (m) { pushSystem((m.color? m.color: ('anon'+m.id)) + ' left'); releaseColor(m.color); clientMeta.delete(socket); broadcastPresence(); }
   });
   socket.on('error', err => {
-    console.warn('[ws] client error', meta.id, err?.message);
+  systemLog('error','client-error',{ id: meta.id, msg: err?.message });
   });
 });
 
 // Removed periodic heartbeat broadcast (sync now only on admin actions / joins)
 
 // Presence timeout sweeper
-setInterval(()=>{
+const presenceInterval = setInterval(()=>{
   let changed=false; const now=Date.now();
   for (const [sock, meta] of [...clientMeta.entries()]) {
     const idle = now - meta.lastSeen;
     if (idle > PRESENCE_TIMEOUT_MS) {
-      console.warn('[presence] timing out client', meta.id, 'idle', idle);
+  systemLog('presence','timeout',{ id: meta.id, idleMs: idle });
+  systemLog('presence','timeout',{ id: meta.id, guid: meta.guid, idleMs: idle });
+            systemLog('chat','global-burst',{ count: globalChatTimes.length, windowMs: CHAT_RATE_WINDOW_MS });
+  if (!isAdminMsg) { systemLog('media','deny-load-not-admin',{ id: meta.id, guid: meta.guid }); break; }
+  if (!isAdminMsg) { systemLog('media','deny-unload-not-admin',{ id: meta.id, guid: meta.guid }); break; }
+          systemLog('media','play',{ fromT: prev.t, toT: lastBroadcast.t, rev: mediaRev, adminId: meta.id, adminGuid: meta.guid });
+          systemLog('media','pause',{ fromT: prev.t, toT: lastBroadcast.t, rev: mediaRev, adminId: meta.id, adminGuid: meta.guid });
+          systemLog('media','seek',{ fromT: prev.t, toT: lastBroadcast.t, paused: lastBroadcast.paused, rev: mediaRev, adminId: meta.id, adminGuid: meta.guid });
+  systemLog('ws','client-closed',{ id: meta.id, guid: meta.guid, code, reason });
+  systemLog('error','client-error',{ id: meta.id, guid: meta.guid, msg: err?.message });
       pushSystem((meta.color? meta.color: ('anon'+meta.id)) + ' left');
       releaseColor(meta.color); clientMeta.delete(sock); try { sock.close(4000,'timeout'); } catch {}
       changed=true;
@@ -259,9 +322,30 @@ setInterval(()=>{
   if (changed) broadcastPresence();
 }, PRESENCE_SWEEP_INTERVAL);
 
+// Periodic performance snapshot (Phase 3 instrumentation)
+const perfInterval = setInterval(()=>{
+  if (!wss.clients.size) return;
+  const now = Date.now();
+  const clients=[];
+  for (const meta of clientMeta.values()){
+    const connectedMs = now - meta.connectAt;
+    const sec = connectedMs>0 ? connectedMs/1000 : 1;
+    const upBps = meta.bytesIn ? meta.bytesIn/sec : 0;
+    const downBps = meta.bytesOut ? meta.bytesOut/sec : 0;
+    let drift=null;
+    if (meta.lastPos && mediaFile && !lastBroadcast.paused){
+      let expected = lastBroadcast.t;
+      let delta = (now - lastBroadcast.ts)/1000; if(delta<0) delta=0; expected += delta;
+      drift = meta.lastPos.t - expected;
+    }
+    clients.push({ id: meta.id, drift, upBps: Number(upBps.toFixed(1)), downBps: Number(downBps.toFixed(1)), msgsIn: meta.msgsIn||0, msgsOut: meta.msgsOut||0 });
+  }
+  systemLog('perf','snapshot',{ count: clients.length, clients });
+}, 30000);
+
 function broadcastState(){
   const payload = JSON.stringify({ type:'state', data: lastBroadcast });
-  for (const c of wss.clients) { if (c.readyState === 1) c.send(payload); }
+  for (const c of wss.clients) { if (c.readyState === 1) wsSend(c, payload); }
 }
 
 // Lightweight telemetry endpoints for debugging client disconnects
@@ -271,12 +355,29 @@ app.get('/api/debug/clients', (_req,res)=>{
   for (const [sock, meta] of clientMeta.entries()) {
     let drift = null;
     if (meta.lastPos && mediaFile && !lastBroadcast.paused) {
-      // compute expected position
       let expected = lastBroadcast.t;
       let delta = (now - lastBroadcast.ts)/1000; if(delta<0) delta=0; if(!lastBroadcast.paused) expected += delta;
       drift = meta.lastPos.t - expected;
     }
-    clients.push({ id: meta.id, color: meta.color, name: displayName(meta), isAdmin: !!meta.isAdmin, idleMs: now - meta.lastSeen, connectedMs: now - meta.connectAt, drift });
+    const connectedMs = now - meta.connectAt;
+    const sec = connectedMs > 0 ? connectedMs/1000 : 1;
+    const upBps = meta.bytesIn ? meta.bytesIn / sec : 0;   // from client -> server
+    const downBps = meta.bytesOut ? meta.bytesOut / sec : 0; // server -> client
+    clients.push({
+      id: meta.id,
+      color: meta.color,
+      name: displayName(meta),
+      isAdmin: !!meta.isAdmin,
+      idleMs: now - meta.lastSeen,
+      connectedMs,
+      drift,
+      bytesIn: meta.bytesIn||0,
+      bytesOut: meta.bytesOut||0,
+      msgsIn: meta.msgsIn||0,
+      msgsOut: meta.msgsOut||0,
+      upBps: Number(upBps.toFixed(1)),
+      downBps: Number(downBps.toFixed(1))
+    });
   }
   res.json({ count: clients.length, clients });
 });
@@ -287,100 +388,15 @@ app.get('/api/debug/state', (_req,res)=>{
 // Locate first playable file (prefer *.wp.mp4 then .webm) or use MEDIA_FILE env.
 const ROOT = process.cwd();
 // Only serve system-managed outputs (transcoded + subtitles) from media/output; raw user imports live elsewhere
-const mediaRoot = path.join(ROOT, 'media', 'output');
-// Cached audio stream probe (reset when mediaRev changes)
-let cachedAudioRev = -1; // rev used for cache
-let cachedAudioList = [];
+const mediaRoot = config.media.outputDir;
+// Audio probe now handled via lib/audio-probe.js (internal caching there)
 
-// Unified episode key extraction (handles SxxEyy, Exx, and " - 01 " patterns in release names)
-function episodeKeyFromName(name){
-  if(!name) return null;
-  const base = name.replace(/\.(wp\.mp4|webm)$/i,'');
-  const lower = base.toLowerCase();
-  let m = lower.match(/(s\d{1,2}e\d{1,3})/i); if (m) return m[1].toUpperCase();
-  m = lower.match(/\b(e\d{2,3})\b/i); if (m) return m[1].toUpperCase();
-  // Pattern: space-hyphen-space + number (e.g., " - 01 ") followed by space or end or bracket
-  m = lower.match(/ - (\d{2,3})(?=\s|\[|$)/); if (m) { const num = m[1]; return 'S01E' + num.padStart(2,'0'); }
-  return null;
-}
-
-function probeAudioStreams(file){
-  try {
-    if (!file) return [];
-    if (cachedAudioRev === mediaRev && cachedAudioList.length && file === mediaFile) return cachedAudioList;
-    const args = [
-      '-v','error',
-      '-select_streams','a',
-      '-show_entries','stream=index,codec_name,channels,sample_rate:stream_tags=language,title:stream_disposition=default',
-      '-of','json',
-      file
-    ];
-    const res = spawnSync('ffprobe', args, { encoding: 'utf8' });
-    if (res.error) { console.warn('[ffprobe] spawn error', res.error); return []; }
-    const txt = (res.stdout||'').trim();
-    if (!txt) return [];
-    let j; try { j = JSON.parse(txt); } catch { return []; }
-    const out = [];
-    if (j && Array.isArray(j.streams)) {
-      for (const s of j.streams) {
-        out.push({
-          index: s.index,
-            // language tag precedence: tags.language, tags.LANGUAGE, else ''
-          lang: (s.tags && (s.tags.language || s.tags.LANGUAGE) || '').toLowerCase(),
-          title: (s.tags && (s.tags.title || s.tags.TITLE) || ''),
-          codec: s.codec_name || '',
-          channels: s.channels || null,
-          sample_rate: s.sample_rate ? Number(s.sample_rate) : null,
-          default: !!(s.disposition && s.disposition.default)
-        });
-      }
-    }
-    cachedAudioList = out;
-    cachedAudioRev = mediaRev;
-    return out;
-  } catch (e) {
-    console.warn('[ffprobe] error', e); return [];
-  }
-}
-function findFirst() {
-  if (process.env.MEDIA_FILE) {
-    const p = path.isAbsolute(process.env.MEDIA_FILE) ? process.env.MEDIA_FILE : path.join(mediaRoot, process.env.MEDIA_FILE);
-    if (fs.existsSync(p)) return p;
-  }
-  function walk(dir) {
-    let entries = [];
-    try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return null; }
-    // first pass *.wp.mp4
-    for (const e of entries) {
-      const full = path.join(dir, e.name);
-      if (e.isDirectory()) { const f = walk(full); if (f) return f; }
-      else if (e.name.toLowerCase().endsWith('.wp.mp4')) return full;
-    }
-    // second pass .webm
-    for (const e of entries) {
-      const full = path.join(dir, e.name);
-      if (e.isDirectory()) { const f = walk(full); if (f) return f; }
-      else if (e.name.toLowerCase().endsWith('.webm')) return full;
-    }
-    return null;
-  }
-  return walk(mediaRoot);
-}
-// Resolve helper for safe media path
-function resolveMedia(rel){
-  if (typeof rel !== 'string') return null;
-  const norm = rel.replace(/\\/g,'/').replace(/^\/+/, '');
-  const abs = path.join(mediaRoot, norm);
-  if (!abs.startsWith(mediaRoot)) return null;
-  if (!fs.existsSync(abs) || !fs.statSync(abs).isFile()) return null;
-  const lower = abs.toLowerCase();
-  if (!(lower.endsWith('.wp.mp4') || lower.endsWith('.webm'))) return null;
-  return { rel: norm, abs };
-}
+// probeAudioStreams moved to lib/audio-probe.js
+// (findFirst / resolveMedia removed: provided by lib/media-listing.js)
 // Startup: DO NOT auto-load first media; begin on "home" (starfield) until admin selects a file.
-console.log('[media] starting with no media loaded (home screen)');
+systemLog('media','startup-home',{ loaded:false });
 
-// Auth gate for index: require ?key=KEY (or legacy ?admin=KEY / auto) even for viewer mode.
+// Auth gate for index: require ?key=KEY (or ?admin=KEY) even for viewer mode.
 // Also respect an offline sentinel file (state/offline.flag) to force 404 responses without stopping process.
 const publicDir = path.join(__dirname, 'public');
 const offlineFlag = path.join(process.cwd(),'state','offline.flag');
@@ -388,34 +404,12 @@ function isOffline(){ try { return fs.existsSync(offlineFlag); } catch { return 
 // Global offline kill-switch (returns 404 for everything when state/offline.flag exists)
 app.use((req,res,next)=>{ if(isOffline()) { return res.status(404).send('Not Found'); } next(); });
 function authGate(req, res, next){
-  const supplied = req.query.key || req.query.admin; // support both param names
-  if (supplied === ADMIN_KEY || supplied === 'auto') return next();
+  const supplied = req.query.key || req.query.admin;
+  const auth = validateAccess({ suppliedKey: supplied, requestPath: req.path, adminKey: ADMIN_KEY });
+  if (auth.ok) return next();
   const wanted = req.path === '/' ? '/' : req.path;
-  // Inline starfield so animation is visible BEFORE key entry.
-  res.status(401).send(`<!doctype html><html><head><meta charset=utf-8><title>Enter Access Key</title><style>
-  :root{color-scheme:dark}
-  body{font-family:system-ui,Segoe UI,Roboto,sans-serif;position:relative;margin:0;min-height:100vh;background:#000;color:#e6e6e6;display:flex;align-items:center;justify-content:center;overflow:hidden}
-  #sf{position:absolute;inset:0;width:100%;height:100%;display:block;background:#000}
-  form{position:relative;z-index:2;background:#121519;padding:24px 28px 28px;border-radius:14px;box-shadow:0 4px 28px -4px rgba(0,0,0,.7);display:flex;flex-direction:column;gap:12px;min-width:300px;border:1px solid #1e242b}
-  h2{margin:0;font:600 18px system-ui;letter-spacing:.3px}
-  p{margin:0}
-  .sub{font:12px system-ui;opacity:.75}
-  input{padding:10px 12px;border-radius:8px;border:1px solid #2a333c;background:#0d1115;color:#e6e6e6;font:14px system-ui;outline:none}
-  input:focus{border-color:#347fd9}
-  button{all:unset;background:#2e78d2;color:#fff;padding:12px 16px;border-radius:10px;cursor:pointer;font:600 14px system-ui;text-align:center;letter-spacing:.3px}
-  button:hover{background:#296bc0}
-  .hint{margin:4px 0 0;font:11px system-ui;opacity:.55}
-  </style></head><body>
-  <canvas id=sf></canvas>
-  <form onsubmit="var k=document.getElementById('k').value.trim(); if(k){var extra=location.search.includes('verbose')?'&verbose':''; location.href='${wanted}?admin='+encodeURIComponent(k)+extra;} return false">
-    <h2>Enter Access Key</h2>
-    <p class=sub>Key required to join session.</p>
-    <input id=k placeholder='Access key' autofocus autocomplete=off spellcheck=false>
-    <button type=submit>Enter</button>
-    <p class=hint>Provide the key to viewers.</p>
-  </form>
-  <script>(function(){var c=document.getElementById('sf');if(!c)return;var ctx=c.getContext('2d');function rs(){c.width=innerWidth;c.height=innerHeight;}addEventListener('resize',rs);rs();var stars=[];var N=Math.min(1400,Math.floor(c.width*c.height/2400));for(var i=0;i<N;i++){stars.push({x:Math.random()*2-1,y:Math.random()*2-1,z:Math.random(),s:0.00018+Math.random()*0.00042});}var last=0;function step(ts){if(!last)last=ts;var dt=Math.min(60,ts-last);last=ts;ctx.fillStyle='#000';ctx.fillRect(0,0,c.width,c.height);var w=c.width,h=c.height,cx=w/2,cy=h/2;for(var s of stars){s.z-=s.s*dt;if(s.z<=0.0005){s.x=Math.random()*2-1;s.y=Math.random()*2-1;s.z=1;}var k=1/s.z,px=s.x*k*cx+cx,py=s.y*k*cy+cy;if(px>=0&&px<w&&py>=0&&py<h){var r=Math.max(.4,1.7*(1-s.z));ctx.fillStyle='rgba(255,255,255,'+(1.15*(1-s.z)).toFixed(3)+')';ctx.beginPath();ctx.arc(px,py,r,0,6.283);ctx.fill();}}requestAnimationFrame(step);}requestAnimationFrame(step);})();</script>
-  </body></html>`);
+  const html = renderTemplate('access-denied.html', { WANTED: wanted });
+  res.status(401).send(html || 'Unauthorized');
 }
 // Root redirect: send bare domain to /watchparty (no key param). If root has key/admin, preserve it.
 app.get('/', (req,res,next)=>{
@@ -425,12 +419,15 @@ app.get('/', (req,res,next)=>{
   const qs = Object.keys(req.query).length ? ('?' + new URLSearchParams(req.query).toString()) : '';
   return res.redirect(302, '/watchparty' + qs);
 });
-// Legacy /index.html still allowed (auth gated)
-app.get(['/index.html'], authGate, (req,res)=> res.sendFile(path.join(publicDir,'index.html')));
-app.get(['/admin','/admin.html'], authGate, (req,res)=> res.sendFile(path.join(publicDir,'index.html')));
-// New desired pretty paths
-app.get(['/watchparty','/watchparty/','/watchparty/index.html'], authGate, (req,res)=> res.sendFile(path.join(publicDir,'index.html')));
-app.get(['/watchparty-admin','/watchparty-admin/','/watchparty-admin/index.html'], authGate, (req,res)=> res.sendFile(path.join(publicDir,'index.html')));
+// Viewer & admin entry paths (all mapped to same SPA index)
+app.get(config.routes.viewer, authGate, (req,res)=> res.sendFile(path.join(publicDir,'index.html')));
+app.get(config.routes.admin, authGate, (req,res)=> {
+  if (hasActiveAdmin()) {
+    const html = renderTemplate('admin-active.html', { TIMEOUT_S: Math.ceil(PRESENCE_TIMEOUT_MS/1000) });
+    return res.status(409).send(html || 'Admin already active');
+  }
+  res.sendFile(path.join(publicDir,'index.html'));
+});
 // Static assets (JS/CSS/media fetches) remain open; gate is only entry HTML + websocket + admin actions
 app.use(express.static(publicDir));
 // Serve character sprite images (read-only)
@@ -469,7 +466,7 @@ app.get('/admin-key', (req, res) => {
 });
 // List media files (admin can choose path)
 app.get('/api/files', (_req,res) => {
-  res.json(listMedia());
+  res.json(listMedia(mediaRoot));
 });
 
 // Expose character color metadata so frontend doesn't need hardcoded duplicate
@@ -479,72 +476,11 @@ app.get('/api/colors', (_req, res) => {
 
 // Subtitle route with cross-variant language selection & sanitization
 app.get('/media/current.vtt', (req, res) => {
-  if (!mediaFile) return res.status(404).end();
-  const base = mediaFile.replace(/\.(wp\.mp4|webm)$/i,'');
-  const dir = path.dirname(base);
-  const prefix = path.basename(base);
-  const epKey = (episodeKeyFromName(prefix) || '').toLowerCase();
-  const wantLangRaw = (req.query.lang||'').trim();
-  const wantLang = wantLangRaw.toLowerCase();
-  let files = [];
-  try { files = fs.readdirSync(dir); } catch {}
-  const candidates = [];
-  for (const f of files) {
-    const low = f.toLowerCase();
-    if (!(low.endsWith('.vtt') || low.endsWith('.srt'))) continue;
-    const subEp = (episodeKeyFromName(f) || '').toLowerCase();
-    const baseMatch = low.startsWith(prefix.toLowerCase() + '.');
-    const epMatch = epKey && subEp && subEp === epKey;
-    if (!baseMatch && !epMatch) continue;
-    const parts = f.split('.');
-    if (parts.length < 3) continue;
-    const ext = parts.pop();
-    const langGuess = parts[parts.length-1].toLowerCase();
-    candidates.push({ file: f, low, ext: ext.toLowerCase(), lang: langGuess, baseMatch, epMatch });
-  }
-  let chosenObj = null;
-  function pickFirst(fn){ return candidates.find(fn) || null; }
-  if (wantLang) chosenObj = pickFirst(c=> c.lang===wantLang && c.baseMatch) || pickFirst(c=> c.lang===wantLang);
-  if (!chosenObj) chosenObj = pickFirst(c=> /^(eng|en)$/i.test(c.lang) && c.baseMatch) || pickFirst(c=> /^(eng|en)$/i.test(c.lang));
-  if (!chosenObj) chosenObj = pickFirst(c=> c.baseMatch);
-  if (!chosenObj) chosenObj = candidates[0];
-  if (!chosenObj) return res.status(404).end();
-  const chosen = path.join(dir, chosenObj.file);
-  const type = chosenObj.ext === 'srt' ? 'srt':'vtt';
-  const langHint = chosenObj.lang;
-  res.setHeader('X-Subtitle-Source', chosenObj.file);
-  res.setHeader('X-Subtitle-Lang', langHint);
-  try {
-    if (req.method === 'HEAD') { res.setHeader('Content-Type','text/vtt; charset=utf-8'); return res.status(200).end(); }
-    let raw = fs.readFileSync(chosen,'utf8').replace(/\r/g,'');
-    if (type === 'srt') {
-      const out=['WEBVTT',''];
-      const lines = raw.split('\n');
-      for (const line of lines){
-        if (/^\d+$/.test(line.trim())) continue;
-        const m=line.match(/^(\d\d:\d\d:\d\d),(\d{3}) --> (\d\d:\d\d:\d\d),(\d{3})(.*)$/); if (m) out.push(`${m[1]}.${m[2]} --> ${m[3]}.${m[4]}${m[5]}`); else out.push(line);
-      }
-      raw = out.join('\n');
-    }
-    if (!/^WEBVTT/m.test(raw)) raw = 'WEBVTT\n\n'+raw;
-    let lines = raw.split('\n');
-    let lastCueText=null;
-    lines = lines.map(line=>{
-      if (/^WEBVTT/.test(line) || /-->/.test(line)) return line;
-      line = line.replace(/\{[^}]*\}/g,'');
-      line = line.replace(/\[[^\]]*(?:translator|tl note|t\/n|note)[^\]]*\]/ig,'');
-      line = line.replace(/\s{2,}/g,' ').trim();
-      return line;
-    });
-    const dedup=[];
-    for (const l of lines){
-      if (!/-->/.test(l) && l && l===lastCueText) continue;
-      if (!/-->/.test(l) && l) lastCueText=l; else if (/-->/.test(l)) lastCueText=null;
-      dedup.push(l);
-    }
-    res.setHeader('Content-Type','text/vtt; charset=utf-8');
-    res.send(dedup.join('\n'));
-  } catch(e){ console.error('[subs] error serving subtitles', e); res.status(500).end(); }
+  const r = buildSubtitleResponse(mediaFile, req.query.lang);
+  if (r.headers) { for (const [k,v] of Object.entries(r.headers)) res.setHeader(k,v); }
+  if (r.status !== 200) return res.status(r.status).end();
+  if (req.method === 'HEAD') return res.status(200).end();
+  res.send(r.body);
 });
 
 // List available embedded audio tracks for current media (requires ffprobe on PATH)
@@ -606,84 +542,53 @@ app.get('/media/current-audio.json', (_req,res) => {
 });
 
 // List available subtitle tracks for current media
-app.get('/media/current-subs.json', (req,res) => {
-  if (!mediaFile) return res.json({ tracks: [] });
-  const base = mediaFile.replace(/\.(wp\.mp4|webm)$/i,'');
-  const dir = path.dirname(base);
-  const prefix = path.basename(base).toLowerCase() + '.';
-  const epKey = (episodeKeyFromName(prefix) || '').toLowerCase();
-  let files=[]; try { files = fs.readdirSync(dir); } catch { return res.json({ tracks: [] }); }
-  const tracks=[];
-  for (const f of files){
-    const low = f.toLowerCase();
-    if (!(low.endsWith('.vtt') || low.endsWith('.srt'))) continue;
-  // Accept either same base OR episode keys match (robust across different release naming styles)
-  const subEpKey = (episodeKeyFromName(f) || '').toLowerCase();
-  if (!(low.startsWith(prefix) || (epKey && subEpKey && subEpKey === epKey))) continue;
-    const parts = f.split('.'); // base, lang, maybe slug..., ext
-    if (parts.length < 3) continue;
-    const ext = parts.pop();
-    const lang = parts[parts.length-1]; // last before ext
-    const slugParts = parts.slice(1, parts.length-1); // middle pieces after base
-    const label = (lang + (slugParts.length? (' '+slugParts.join('-')):'' )).toLowerCase();
-    tracks.push({ file: f, lang, label, ext });
-  }
-  tracks.sort((a,b)=> a.lang.localeCompare(b.lang));
+app.get('/media/current-subs.json', (_req,res) => {
+  const tracks = enumerateSubtitleTracks(mediaFile);
   res.json({ tracks });
 });
 
-function listMedia(){
-  const all=[];
-  (function walk(dir, rel){
-    let entries=[]; try { entries=fs.readdirSync(dir,{withFileTypes:true}); } catch { return; }
-    for (const e of entries){
-      const abs=path.join(dir,e.name);
-      const r = rel? rel + '/' + e.name : e.name;
-      if (e.isDirectory()) walk(abs,r); else {
-        const low = e.name.toLowerCase();
-        if (low.endsWith('.wp.mp4') || low.endsWith('.webm')) all.push(r.replace(/\\/g,'/'));
-      }
-    }
-  })(mediaRoot,'');
-  // Group by episode key so only one canonical entry per episode is shown
-  const groups = new Map(); // key -> { chosen, candidates: [] }
-  for (const rel of all){
-    const file = rel.split(/[\\/]/).pop();
-    const k = episodeKeyFromName(file) || file.replace(/\.(wp\.mp4|webm)$/i,'');
-    const key = k.toUpperCase();
-    let g = groups.get(key); if(!g){ g={ chosen:null, candidates:[] }; groups.set(key,g); }
-    g.candidates.push(rel);
-  }
-  for (const [key,g] of groups.entries()){
-    // Pick canonical: prefer name NOT starting with '[' and containing SxxEyy (already key) and longer descriptive title
-    const sorted = [...g.candidates].sort((a,b)=>{
-      const an = a.split(/[\\/]/).pop();
-      const bn = b.split(/[\\/]/).pop();
-      const aBracket = an.startsWith('[')?1:0; const bBracket = bn.startsWith('[')?1:0;
-      if (aBracket !== bBracket) return aBracket - bBracket; // prefer non-bracket
-      // Prefer longer (likely descriptive) name
-      if (an.length !== bn.length) return bn.length - an.length;
-      return a.localeCompare(b);
-    });
-    g.chosen = sorted[0];
-  }
-  // Build list in episode order: try season/episode numeric ordering
-  function sortKey(rel){
-    const name = rel.split(/[\\/]/).pop();
-    const base = name.replace(/\.(wp\.mp4|webm)$/i,'');
-    const m = base.match(/s(\d{1,2})e(\d{1,3})/i); if (m){ return { s: Number(m[1]), e: Number(m[2]), raw: base }; }
-    const m2 = base.match(/e(\d{2,3})/i); if (m2){ return { s: 0, e: Number(m2[1]), raw: base }; }
-    return { s: 0, e: 9999, raw: base };
-  }
-  const chosen = [...groups.values()].map(g=>g.chosen).filter(Boolean);
-  chosen.sort((a,b)=>{
-    const ka = sortKey(a); const kb = sortKey(b);
-    if (ka.s !== kb.s) return ka.s - kb.s;
-    if (ka.e !== kb.e) return ka.e - kb.e;
-    return ka.raw.localeCompare(kb.raw);
-  });
-  return chosen;
-}
+// (listMedia implementation removed; provided by lib/media-listing.js)
 
 const port = process.env.PORT ? Number(process.env.PORT) : 3000;
 server.listen(port, () => console.log(`listening http://localhost:${port} (ADMIN_KEY=${ADMIN_KEY})`));
+
+// Graceful shutdown summary (Phase 5)
+let shuttingDown = false;
+function shutdownSummary(signal){
+  if (shuttingDown) return; // prevent listener pileup/log spam
+  shuttingDown = true;
+  try {
+    const now = Date.now();
+    const uptimeMs = now - processStartTs;
+    const clients=[];
+    for (const meta of clientMeta.values()) {
+      clients.push({ id: meta.id, color: meta.color, admin: !!meta.isAdmin, msgsIn: meta.msgsIn||0, msgsOut: meta.msgsOut||0 });
+    }
+    const mem = process.memoryUsage?.() || {};
+    systemLog('perf','shutdown-summary',{
+      signal,
+      uptimeMs,
+      clientCount: clients.length,
+      clients,
+      mediaPath: mediaRel,
+      mediaRev,
+      rss: mem.rss,
+      heapUsed: mem.heapUsed
+    });
+  } catch (e) {
+    systemLog('error','shutdown-summary-fail',{ msg: e?.message });
+  }
+  // Begin graceful close
+  try { clearInterval(presenceInterval); } catch {}
+  try { clearInterval(perfInterval); } catch {}
+  try {
+    for (const c of wss.clients) { try { c.close(1001,'server-shutdown'); } catch {} }
+  } catch {}
+  // Close HTTP server; if lingering sockets block callback > timeout, force exit.
+  let forced = false;
+  setTimeout(()=>{ if(!forced){ forced=true; systemLog('perf','shutdown-forced',{}); process.exit(0); } }, 2500);
+  try { server.close(()=> { if(!forced){ forced=true; process.exit(0); } }); } catch { if(!forced){ forced=true; process.exit(0); } }
+}
+['SIGINT','SIGTERM'].forEach(sig=>{
+  try { process.on(sig, () => shutdownSummary(sig)); } catch {}
+});

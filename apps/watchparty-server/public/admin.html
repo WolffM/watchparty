@@ -4,31 +4,13 @@
   <meta charset="utf-8" />
   <title>Watchparty Admin</title>
   <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <style>
-    :root { color-scheme: dark; }
-    body { font-family: system-ui, sans-serif; margin:0; background:#0f1114; color:#e6e6e6; }
-    header { padding:.75rem 1rem; background:#1f2329; font-weight:600; display:flex; align-items:center; gap:1rem; }
-    main { padding:1rem clamp(1rem,3vw,2rem); max-width:960px; margin:0 auto; }
-    fieldset { border:1px solid #333; border-radius:8px; padding:1rem 1.25rem; margin-bottom:1.25rem; }
-    legend { padding:0 .5rem; font-weight:600; }
-    label { display:flex; flex-direction:column; gap:.3rem; font-size:.8rem; text-transform:uppercase; letter-spacing:.05em; }
-    input, select, button { font:inherit; padding:.55rem .7rem; border-radius:6px; border:1px solid #333; background:#1d2127; color:#eee; }
-    button { cursor:pointer; border:1px solid #444; background:#27313d; transition:.15s background; }
-    button:hover { background:#324153; }
-    button:active { background:#3a4c61; }
-    .row { display:flex; flex-wrap:wrap; gap:.75rem; align-items:flex-end; }
-    .grow { flex:1 1 220px; }
-    #log { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; background:#121417; padding:.75rem 1rem; border:1px solid #252a31; border-radius:8px; min-height:120px; max-height:300px; overflow:auto; font-size:.75rem; line-height:1.2; }
-    .btn-group { display:flex; gap:.5rem; flex-wrap:wrap; }
-    .status-dot { width:.6rem; height:.6rem; border-radius:50%; background:#c33; display:inline-block; margin-right:.4rem; box-shadow:0 0 0 3px #1f2329; }
-    .status-ok { background:#2fa865; }
-    .small { font-size:.75rem; opacity:.7; }
-  </style>
+  <link rel="stylesheet" href="/theme.css" />
+  <link rel="stylesheet" href="/app.css" />
 </head>
 <body>
   <header>
     <div>Watchparty Admin</div>
-    <div class="small">Milestone 3</div>
+    <div class="small" id="buildTag"></div>
   </header>
   <main>
     <fieldset>
@@ -66,7 +48,10 @@
       <div id="log"></div>
     </fieldset>
   </main>
+  <script src="/client-config.js"></script>
   <script>
+    // Apply version tag from shared client config if present
+    try { document.getElementById('buildTag').textContent = (window.WP_CLIENT_CONFIG && WP_CLIENT_CONFIG.version) || 'dev'; } catch {}
     const $ = sel => document.querySelector(sel);
     const fileSelect = $('#fileSelect');
     const logEl = $('#log');

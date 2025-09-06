@@ -6,312 +6,8 @@
   <title>Video</title>
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <meta name="darkreader-lock" />
-  <style>
-    :root {
-      color-scheme: dark;
-    }
-
-    body {
-      margin: 0;
-      background: #000;
-      min-height: 100vh;
-      font-family: system-ui, sans-serif;
-      overflow: hidden;
-      display: flex;
-    }
-
-    #app {
-      display: flex;
-      flex: 1 1 auto;
-      width: 100%;
-      height: 100vh;
-    }
-
-    #videoWrap {
-      position: relative;
-      flex: 1 1 auto;
-      background: #000;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-    }
-
-    video {
-      width: 100%;
-      height: 100%;
-      max-width: 100%;
-      max-height: 100%;
-      object-fit: contain;
-      background: #000;
-  will-change: clip-path;
-  backface-visibility: hidden;
-  -webkit-backface-visibility: hidden;
-    }
-
-    /* Custom subtitle bubble + native fullscreen styling */
-    /* Base bubble (styles override) */
-    .cc-bubble {
-      display: inline-block;
-      padding: 0 4px;
-      font-weight: 600;
-    }
-
-    #ccOverlay.style-default .cc-bubble {
-      color: #fff;
-      text-shadow: 2px 2px 3px #000, -2px 2px 3px #000, 2px -2px 3px #000, -2px -2px 3px #000, 0 0 6px #000, 0 0 14px #000;
-    }
-
-    #ccOverlay.style-outline .cc-bubble {
-      color: #fff;
-      -webkit-text-stroke: 2px #000;
-      text-shadow: none;
-      font-weight: 700;
-    }
-
-    #ccOverlay.style-yellow .cc-bubble {
-      color: #ffd400;
-      text-shadow: 2px 2px 3px #000, -2px 2px 3px #000, 2px -2px 3px #000, -2px -2px 3px #000, 0 0 8px #000;
-      font-weight: 700;
-    }
-
-    #ccOverlay.style-box .cc-bubble {
-      color: #fff;
-      background: rgba(0, 0, 0, .55);
-      border-radius: 8px;
-      padding: 2px 12px 4px;
-      text-shadow: 0 0 6px #000, 0 0 16px #000;
-      font-weight: 600;
-    }
-
-    .cc-bubble:empty {
-      display: none;
-    }
-
-    video.fs-native-subs::cue {
-      color: #fff;
-      font: 700 1.15em/1.4 system-ui;
-      text-shadow: 2px 2px 3px #000, -2px 2px 3px #000, 2px -2px 3px #000, -2px -2px 3px #000, 0 0 8px #000, 0 0 18px #000;
-    }
-
-    /* Chat panel */
-    #chatPanel {
-      width: 25%;
-      max-width: 420px;
-      min-width: 260px;
-      background: #11161c;
-      color: #e6e9ec;
-      display: flex;
-      flex-direction: column;
-      border-left: 1px solid #222a32;
-      font: 16px/1.35 system-ui;
-    }
-
-    #chatPanel.collapsed {
-      width: 0 !important;
-      min-width: 0 !important;
-      overflow: hidden;
-      border-left: none;
-    }
-
-    #chatHeader {
-      padding: 6px 10px;
-      display: flex;
-      gap: 8px;
-      align-items: center;
-      background: #121a21;
-      font-weight: 600;
-      font-size: 16px;
-    }
-
-    #chatUsers {
-      flex: 1;
-      display: flex;
-      align-items: center;
-      gap: 4px;
-      overflow: hidden;
-    }
-
-    #chatUsers .user-count {
-      font: 13.2px system-ui;
-      opacity: .65;
-      margin-right: 4px;
-    }
-
-    #chatUsers img.user-sprite {
-      width: 22px;
-      height: 22px;
-      object-fit: contain;
-      image-rendering: crisp-edges;
-      flex: 0 0 auto;
-    }
-
-    #chatMessages {
-      flex: 1 1 auto;
-      overflow-y: auto;
-      padding: 6px 8px 10px;
-      scrollbar-width: thin;
-    }
-
-    #chatMessages::-webkit-scrollbar {
-      width: 8px;
-    }
-
-    #chatMessages::-webkit-scrollbar-track {
-      background: #0d1216;
-    }
-
-    #chatMessages::-webkit-scrollbar-thumb {
-      background: #25313b;
-      border-radius: 4px;
-    }
-
-    .chat-line {
-      padding: 2px 0;
-      word-wrap: break-word;
-      word-break: break-word;
-    }
-
-    .chat-line .time {
-      color: #586673;
-      font-size: 13.2px;
-      margin-right: 4px;
-    }
-
-    .chat-line .icon {
-      font-size: 12px;
-      margin-right: 4px;
-    }
-
-    .chat-line .name {
-      font-weight: 600;
-      margin-right: 4px;
-      font-size: 16px;
-    }
-
-    .chat-avatar {
-      display: inline-flex;
-      width: 20px;
-      height: 20px;
-      align-items: center;
-      justify-content: center;
-      overflow: hidden;
-      border-radius: 4px;
-      background: #14181c;
-      margin-right: 4px;
-    }
-
-    .chat-avatar img {
-      max-width: 100%;
-      max-height: 100%;
-      object-fit: contain;
-      image-rendering: crisp-edges;
-      display: block;
-    }
-
-    #chatForm {
-      display: flex;
-      padding: 6px 8px 8px;
-      gap: 6px;
-      border-top: 1px solid #222a32;
-    }
-
-    #chatInput {
-      flex: 1;
-      background: #0d1216;
-      border: 1px solid #25313b;
-      border-radius: 4px;
-      color: #e6e9ec;
-      padding: 7px 9px;
-      font: 16px system-ui;
-      outline: none;
-    }
-
-    #chatInput:focus {
-      border-color: #2e78d2;
-    }
-
-    #chatSendBtn {
-      all: unset;
-      background: #2e78d2;
-      padding: 7px 14px;
-      border-radius: 4px;
-      cursor: pointer;
-      font: 16px system-ui;
-      font-weight: 600;
-    }
-
-    #chatSendBtn:hover {
-      background: #2463ad;
-    }
-
-    #chatCollapse {
-      all: unset;
-      cursor: pointer;
-      padding: 4px 8px;
-      background: #1e2730;
-      border-radius: 4px;
-      font-size: 12px;
-    }
-
-    #chatCollapse:hover {
-      background: #25313b;
-    }
-
-    #chatExpand {
-      position: fixed;
-      top: 50%;
-      right: 0;
-      transform: translateY(-50%);
-      background: #1e2730;
-      color: #e6e9ec;
-      border-radius: 6px 0 0 6px;
-      padding: 8px 10px;
-      font: 12px system-ui;
-      cursor: pointer;
-      z-index: 60;
-      display: none;
-    }
-
-    #chatExpand:hover {
-      background: #25313b;
-    }
-
-    @media (max-width: 900px) {
-      #chatPanel {
-        position: fixed;
-        top: 0;
-        right: 0;
-        height: 100vh;
-        z-index: 50;
-        box-shadow: 0 0 18px rgba(0, 0, 0, .6);
-      }
-
-      #app {
-        flex-direction: column;
-      }
-    }
-
-    h1 {
-      position: absolute;
-      top: 0;
-      left: 0;
-      font-size: 0;
-    }
-    /* Vertical center-out wipe animation (enter + reverse for exit)
-       Simplified to 2 keyframes to let GPU interpolate smoothly; previous many stops caused perceived stutter.
-       Easing curve: fast acceleration after gentle lift-off, then easing into full reveal. */
-    @keyframes wipeInVertical {
-      from { clip-path: inset(50% 0 50% 0); }
-      to   { clip-path: inset(0 0 0 0); }
-    }
-    /* Keep duration; new easing reduces mid-animation plateau. */
-    video.wipe-enter { animation: wipeInVertical 1.26s cubic-bezier(0.78,0.02,0.18,1) forwards; }
-    video.wipe-exit  { animation: wipeInVertical 1.26s cubic-bezier(0.78,0.02,0.18,1) reverse forwards; }
-  video.wipe-prep { clip-path: inset(50% 0 50% 0) !important; }
-    /* During wipe we keep video visible but may hide controls separately */
-  /* Hide admin-only controls on viewer (non /admin path) via body:not(.is-admin) marker (added in script). */
-  body:not(.is-admin) .admin-only { display: none !important; }
-  </style>
+  <link rel="stylesheet" href="/theme.css" />
+  <link rel="stylesheet" href="/app.css" />
 </head>
 
 <body>
@@ -320,37 +16,35 @@
   <video id="player" preload="metadata" crossorigin="anonymous" playsinline>
         <p>Your browser does not support HTML5 video.</p>
       </video>
-      <div id="ccOverlay" class="style-default"
-        style="position:absolute;left:50%;bottom:6%;transform:translateX(-50%);width:90%;max-width:1200px;text-align:center;font:20px/1.35 system-ui;color:#fff;padding:2px 8px;pointer-events:none;box-sizing:border-box;line-height:1.35;">
+  <div id="ccOverlay" class="style-default">
       </div>
     </div>
     <aside id="chatPanel" class="">
       <div id="chatHeader">
-        <div style="display:flex;align-items:center;gap:6px;">
+  <div class="flex-row-gap6">
           <span>Chat</span>
         </div>
         <div id="chatUsers"></div>
       </div>
       <div id="chatMessages"></div>
-      <form id="chatForm" autocomplete="off" style="position:relative;">
+  <form id="chatForm" autocomplete="off">
         <input id="chatInput" maxlength="300" placeholder="Send a message" />
-        <div style="display:flex;gap:6px;">
+        <div class="flex-row-gap6">
           <button id="chatSendBtn" type="submit">Send</button>
-          <button id="nameBtn" type="button"
-            style="all:unset;background:#1e2730;color:#e6e9ec;padding:6px 10px;border-radius:4px;cursor:pointer;font:12px system-ui;">Name</button>
+          <button id="nameBtn" type="button">Name</button>
         </div>
       </form>
     </aside>
     </div>
   <!-- chatExpand button removed; handled via control bar toggle -->
+  <script src="/client-config.js"></script>
   <script>
-  // New preferred URLs:
-  //  Viewer: /watchparty?key=YOURKEY
-  //  Admin : /watchparty-admin?key=YOURKEY
-  // Legacy still works: /?admin=YOURKEY and /admin?admin=YOURKEY
+  // Entry URLs:
+  //  Viewer: /watchparty?key=YOURKEY (root '/' redirects here)
+  //  Admin : /watchparty-admin?key=YOURKEY (older /admin path still accepted)
   const params = new URLSearchParams(location.search);
   let ADMIN_KEY = params.get('key') || params.get('admin');
-  let isAdmin = (location.pathname.startsWith('/admin') || location.pathname.startsWith('/watchparty-admin')) && !!ADMIN_KEY; // treat as admin on legacy or new path
+  let isAdmin = (location.pathname.startsWith('/watchparty-admin') || location.pathname.startsWith('/admin')) && !!ADMIN_KEY;
     const VERBOSE = params.has('verbose');
   if (isAdmin) { document.body.classList.add('is-admin'); }
   const video = document.getElementById('player');
@@ -366,25 +60,8 @@
     // Always keep overlay as sibling of <video> inside wrapper so wrapper fullscreen includes it.
   let subTrackEl = null, subsEnabled = false, availableSubs = [], currentLang = null, currentStyle = null;
   let autoSubsAttempted = false;
-    const STYLE_IDS = ['default', 'outline', 'yellow', 'box'];
-    // Friendly language display names for subtitle selection
-    const LANG_DISPLAY = {
-      eng: 'English', en: 'English',
-      jpn: 'Japanese', ja: 'Japanese',
-      ger: 'German', de: 'German',
-  spa: 'Spanish', es: 'Spanish',
-  'spa.spanish-latin-america': 'Spanish (Latin America)',
-  'spanish-latin-america': 'Spanish (Latin America)',
-      por: 'Portuguese', pt: 'Portuguese',
-      ita: 'Italian', it: 'Italian',
-      rus: 'Russian', ru: 'Russian',
-      fre: 'French', fr: 'French',
-      ara: 'Arabic', ar: 'Arabic',
-      chi: 'Chinese', zho: 'Chinese', zh: 'Chinese',
-      kor: 'Korean', ko: 'Korean',
-      vie: 'Vietnamese', vi: 'Vietnamese',
-      tur: 'Turkish', tr: 'Turkish'
-    };
+    const STYLE_IDS = (window.WP_CLIENT_CONFIG && WP_CLIENT_CONFIG.styleIds) || ['default','outline','yellow','box'];
+    const LANG_DISPLAY = (window.WP_CLIENT_CONFIG && WP_CLIENT_CONFIG.langDisplay) || {};
     function applyStyle(id) { if (!STYLE_IDS.includes(id)) id = 'default'; currentStyle = id; ccOverlay.classList.remove(...STYLE_IDS.map(s => 'style-' + s)); ccOverlay.classList.add('style-' + id); renderActiveCues(); }
     // Always start with default style (no persistence) after revert
     applyStyle('default');
@@ -423,7 +100,7 @@
       video.classList.add('wipe-enter');
   console.log('[transition] wipe-enter start');
       wipeInProgress=true;
-  setTimeout(()=>{ wipeInProgress=false; video.classList.remove('wipe-enter'); }, 1300); // animation duration (~1.26s) + buffer
+  setTimeout(()=>{ wipeInProgress=false; video.classList.remove('wipe-enter'); }, (WP_CLIENT_CONFIG?.transitions?.wipeDurationMs||1260) + (WP_CLIENT_CONFIG?.transitions?.wipeCleanupExtraMs||40)); // animation duration + buffer
     }
     function triggerWipeExit(cb){
       if(!video) { if(cb) cb(); return; }
@@ -435,20 +112,20 @@
       video.classList.add('wipe-exit');
   console.log('[transition] wipe-exit start');
       wipeInProgress=true;
-  setTimeout(()=>{ wipeInProgress=false; video.classList.remove('wipe-exit'); if(cb) cb(); }, 1300); // duration (~1.26s) + buffer
+  setTimeout(()=>{ wipeInProgress=false; video.classList.remove('wipe-exit'); if(cb) cb(); }, (WP_CLIENT_CONFIG?.transitions?.wipeDurationMs||1260) + (WP_CLIENT_CONFIG?.transitions?.wipeCleanupExtraMs||40)); // duration + buffer
     }
     // Starfield home screen (visible when no media loaded yet)
     const starCanvas = document.createElement('canvas');
     starCanvas.id = 'starfield';
-    starCanvas.style.cssText = 'position:absolute;inset:0;width:100%;height:100%;display:block;background:#000;z-index:0;opacity:1;transition:opacity .5s;';
+  starCanvas.className = 'star-canvas';
     videoWrap.insertBefore(starCanvas, videoWrap.firstChild);
     const ctx = starCanvas.getContext('2d');
     let stars = []; let starAnimId = null; let lastStarTs = 0; let starfieldActive = false;
     function initStars() {
-      const count = Math.min(1600, Math.floor(starCanvas.width * starCanvas.height / 2200));
+  const count = Math.min((WP_CLIENT_CONFIG?.starfield?.maxStars)||1600, Math.floor(starCanvas.width * starCanvas.height / ((WP_CLIENT_CONFIG?.starfield?.densityDivisor)||2200)));
       stars = Array.from({ length: count }, () => ({
         x: (Math.random() * 2 - 1), y: (Math.random() * 2 - 1), z: (Math.random()), pz: 1,
-        speed: (0.000135 + Math.random() * 0.00036)
+  speed: ((WP_CLIENT_CONFIG?.starfield?.speedMin)||0.000135) + Math.random() * ((WP_CLIENT_CONFIG?.starfield?.speedVar)||0.00036)
       }));
     }
     function resizeStars() { starCanvas.width = starCanvas.clientWidth; starCanvas.height = starCanvas.clientHeight; initStars(); }
@@ -459,7 +136,7 @@
       const w = starCanvas.width, h = starCanvas.height; const cx = w / 2, cy = h / 2;
       ctx.fillStyle = '#000'; ctx.fillRect(0, 0, w, h);
       for (const s of stars) {
-        s.z -= s.speed * dt; if (s.z <= 0.0005) { s.x = (Math.random() * 2 - 1); s.y = (Math.random() * 2 - 1); s.z = 1; s.pz = 1; }
+  s.z -= s.speed * dt; if (s.z <= ((WP_CLIENT_CONFIG?.starfield?.recycleZ)||0.0005)) { s.x = (Math.random() * 2 - 1); s.y = (Math.random() * 2 - 1); s.z = 1; s.pz = 1; }
         const k = 1 / (s.z); const px = s.x * k * cx + cx; const py = s.y * k * cy + cy;
         if (px < 0 || px >= w || py < 0 || py >= h) { continue; }
         const r = Math.max(0.5, 1.8 * (1 - s.z));
@@ -482,7 +159,7 @@
       starfieldActive = false;
       if (starAnimId) { cancelAnimationFrame(starAnimId); starAnimId = null; }
       starCanvas.style.opacity = '0';
-      setTimeout(() => { if (!starfieldActive) starCanvas.style.display = 'none'; }, 520);
+  setTimeout(() => { if (!starfieldActive) starCanvas.style.display = 'none'; }, (WP_CLIENT_CONFIG?.starfield?.fadeOutMs)||520);
       console.log('[starfield] stop');
     }
     // Start immediately on initial home screen
@@ -496,7 +173,7 @@
       if (homeSelectEl || !isAdmin) return;
       homeSelectEl = document.createElement('button');
       homeSelectEl.textContent = 'Select Media';
-      homeSelectEl.style.cssText = 'position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);background:#2e78d2;color:#fff;padding:14px 26px;font:600 16px system-ui;border:0;border-radius:30px;cursor:pointer;z-index:40;box-shadow:0 4px 22px rgba(0,0,0,.6);';
+  homeSelectEl.className = 'home-start-btn';
       homeSelectEl.onmouseenter = () => homeSelectEl.style.background = '#2463ad';
       homeSelectEl.onmouseleave = () => homeSelectEl.style.background = '#2e78d2';
       homeSelectEl.onclick = () => { if (window.openMediaPicker) window.openMediaPicker(); };
@@ -505,7 +182,7 @@
     // Media title pill (top-right, shows on hover alongside controls)
     const mediaTitle = document.createElement('div');
     mediaTitle.id = 'mediaTitle';
-    mediaTitle.style.cssText = 'position:absolute;top:12px;right:20px;background:rgba(0,0,0,.55);backdrop-filter:blur(4px);padding:6px 14px;border-radius:24px;font:12px system-ui;font-weight:600;color:#fff;letter-spacing:.3px;max-width:38%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;opacity:0;transition:opacity .25s;pointer-events:none;z-index:30;';
+  mediaTitle.className = 'media-title';
     videoWrap.appendChild(mediaTitle);
     function friendlyTitle(path) { if (!path) return ''; const base = path.split(/[\\/]/).pop(); return base.replace(/\.(wp\.mp4|webm)$/i, ''); }
     function updateMediaTitle(path) { const t = friendlyTitle(path); mediaTitle.textContent = t || ''; }
@@ -523,12 +200,12 @@
       video.removeAttribute('controls');
       const ctr = document.createElement('div');
       ctr.id = 'customCtr';
-      ctr.style.cssText = 'position:absolute;bottom:12px;left:50%;transform:translateX(-50%);display:flex;justify-content:center;width:80%;max-width:1700px;gap:14px;align-items:center;padding:4px 4px;font:12px system-ui;color:#fff;z-index:30;opacity:0;transition:opacity .25s;pointer-events:none;box-sizing:border-box;';
+  ctr.className = 'ctr-bar';
       function formatTime(sec) { if (!isFinite(sec)) return '0:00'; sec = Math.max(0, Math.floor(sec)); const h = Math.floor(sec / 3600); const m = Math.floor((sec % 3600) / 60); const s = sec % 60; const mm = (h ? m.toString().padStart(2, '0') : m); const ss = s.toString().padStart(2, '0'); return (h ? (h + ':') : '') + mm + ':' + ss; }
       function mkBtn(label, title) {
         const b = document.createElement('button');
         b.textContent = label; b.title = title || label;
-        b.style.cssText = 'all:unset;cursor:pointer;padding:4px 10px;border-radius:20px;background:#222;color:#fff;font:12px system-ui;transition:background .15s;';
+  b.className = 'btn';
         b.onmouseenter = () => {
           if (b.dataset.active === '1') return; // keep active color
           b.style.background = '#333';
@@ -544,32 +221,59 @@
       if (isAdmin) {
   playBtn = mkBtn('▶', 'Play/Pause');
   playBtn.classList.add('admin-only');
-        // Enlarge play button to match pill group height
-        playBtn.style.padding = '6px 14px';
-        playBtn.style.fontSize = '13px';
-        playBtn.style.borderRadius = '24px';
+  // Large pill sizing via CSS class
+  playBtn.classList.add('btn-large');
         function updatePlayBtn() { playBtn.textContent = video.paused ? '▶' : '⏸'; }
-        playBtn.onclick = () => { if (video.paused) video.play(); else video.pause(); };
+        playBtn.onclick = () => {
+          const willPlay = video.paused;
+          if (willPlay) video.play(); else video.pause();
+          // Fallback broadcast: ensure a play/pause message gets out even if event handler missed
+          setTimeout(()=>{ if(isAdmin && ws && ws.readyState===1){ const type = video.paused ? 'pause' : 'play'; send(type); } }, 60);
+        };
         video.addEventListener('play', updatePlayBtn); video.addEventListener('pause', updatePlayBtn); updatePlayBtn();
-  seekWrap = document.createElement('div'); seekWrap.className = 'admin-only'; seekWrap.style.cssText = 'display:flex;align-items:center;gap:6px;position:relative;background:#222;border-radius:24px;padding:4px 12px;transition:background .15s;';
+  seekWrap = document.createElement('div'); seekWrap.className = 'admin-only cluster';
         seekWrap.onmouseenter = () => seekWrap.style.background = '#333';
         seekWrap.onmouseleave = () => seekWrap.style.background = '#222';
-        seek = document.createElement('input'); seek.type = 'range'; seek.min = '0'; seek.max = '0'; seek.step = '0.01'; seek.value = '0'; seek.style.cssText = 'width:clamp(260px,35vw,640px);cursor:pointer;';
-        const timeLabel = document.createElement('span'); timeLabel.style.cssText = 'font:11px/1.1 system-ui;opacity:.85;min-width:90px;text-align:center;'; timeLabel.textContent = '0:00 / 0:00';
-        const seekPreview = document.createElement('div'); seekPreview.style.cssText = 'position:absolute;bottom:100%;left:0;transform:translate(-50%,-6px);background:#000;padding:4px 6px;border-radius:4px;font:11px system-ui;white-space:nowrap;pointer-events:none;opacity:0;transition:opacity .15s;'; seekPreview.textContent = '0:00';
+  seek = document.createElement('input'); seek.type = 'range'; seek.min = '0'; seek.max = '0'; seek.step = '0.01'; seek.value = '0'; seek.style.width = 'clamp(260px,35vw,640px)'; seek.style.cursor = 'pointer';
+  // Wrap the range in its own relative container so tooltip alignment isn't skewed by outer padding/time label
+  const seekTrackWrap = document.createElement('div'); seekTrackWrap.style.position='relative'; seekTrackWrap.style.display='inline-block'; seekTrackWrap.style.lineHeight='0';
+  seekTrackWrap.appendChild(seek);
+  const timeLabel = document.createElement('span'); timeLabel.className = 'range-time'; timeLabel.textContent = '0:00 / 0:00';
+  const seekPreview = document.createElement('div'); seekPreview.className = 'seek-tooltip'; seekPreview.textContent = '0:00';
+  // Positioning adjustments: ensure tooltip bases off track width only
+  seekPreview.style.pointerEvents='none';
+  seekTrackWrap.appendChild(seekPreview);
         function updateTimeLabel() { timeLabel.textContent = formatTime(video.currentTime) + ' / ' + formatTime(video.duration || 0); }
         seek.addEventListener('mousedown', () => seekDragging = true);
         seek.addEventListener('touchstart', () => seekDragging = true, { passive: true });
-        function commitSeek() { if (!isAdmin) return; suppress = true; video.currentTime = Number(seek.value); setTimeout(() => suppress = false, 120); send('seek'); }
+        function commitSeek() { if (!isAdmin) return; suppress = true; video.currentTime = Number(seek.value); setTimeout(() => suppress = false, 120); // Include current paused state so viewers don't incorrectly resume
+          send('seek', { paused: video.paused }); }
         ['mouseup', 'touchend', 'change'].forEach(ev => seek.addEventListener(ev, () => { if (seekDragging) { seekDragging = false; commitSeek(); } }));
         seek.addEventListener('input', () => { if (seekDragging) { /* preview only */ } });
-        seek.addEventListener('mousemove', e => { if (!video.duration) return; const r = seek.getBoundingClientRect(); const pct = (e.clientX - r.left) / r.width; const t = Math.min(video.duration, Math.max(0, video.duration * pct)); seekPreview.textContent = formatTime(t); seekPreview.style.left = (pct * 100) + '%'; seekPreview.style.opacity = '1'; });
+        seek.addEventListener('mousemove', e => {
+          if (!video.duration) return;
+          const r = seek.getBoundingClientRect();
+            let pct = (e.clientX - r.left) / r.width;
+            if (!isFinite(pct)) pct = 0;
+            pct = Math.min(1, Math.max(0, pct));
+            const t = Math.min(video.duration, Math.max(0, video.duration * pct));
+            seekPreview.textContent = formatTime(t);
+            const pct100 = pct * 100;
+            seekPreview.style.left = pct100 + '%';
+            // Center by default; adjust only near edges
+            let tx = -50;
+            if (pct100 < 4) tx = -pct100; else if (pct100 > 96) tx = -(100 - pct100);
+            seekPreview.style.transform = 'translate('+tx+'%, -6px)';
+            seekPreview.style.opacity = '1';
+        });
         seek.addEventListener('mouseleave', () => { seekPreview.style.opacity = '0'; });
-        video.addEventListener('loadedmetadata', () => { seek.max = (video.duration || 0).toString(); updateTimeLabel(); });
-        video.addEventListener('timeupdate', () => { if (!seekDragging && video.duration) { seek.max = (video.duration || 0).toString(); seek.value = video.currentTime.toString(); } if (!seekDragging) updateTimeLabel(); });
+  video.addEventListener('loadedmetadata', () => { seek.max = (video.duration || 0).toString(); updateTimeLabel(); telemetry('media.loadedmeta', {dur: video.duration||0, src: video.currentSrc||null}); });
+  function updateSeekFill(){ if(seek && seek.max && Number(seek.max)>0){ const pct = (Number(seek.value)/Number(seek.max))*100; seek.style.setProperty('--pct', pct+'%'); } }
+  video.addEventListener('timeupdate', () => { if (!seekDragging && video.duration) { seek.max = (video.duration || 0).toString(); seek.value = video.currentTime.toString(); updateSeekFill(); } if (!seekDragging) updateTimeLabel(); });
+  seek.addEventListener('input', updateSeekFill);
+  setTimeout(updateSeekFill, 60);
         setInterval(() => { if (isAdmin && !seekDragging) updateTimeLabel(); }, 1000);
-        seekWrap.appendChild(seek);
-        seekWrap.appendChild(seekPreview);
+  seekWrap.appendChild(seekTrackWrap);
         seekWrap.appendChild(timeLabel);
         // Reset UI when a different media file is loaded (invoked from applyState on rev change)
         function resetForNewMedia() {
@@ -583,22 +287,22 @@
         // Admin media selector button
     const mediaBtn = mkBtn('Media', 'Select media file');
     mediaBtn.classList.add('admin-only');
-        mediaBtn.style.padding = '6px 14px'; mediaBtn.style.fontSize = '13px'; mediaBtn.style.borderRadius = '24px';
+  mediaBtn.classList.add('btn-large');
         function openMediaPicker() {
           let existing = document.getElementById('mediaPicker'); if (existing) { existing.remove(); }
-          const wrap = document.createElement('div'); wrap.id = 'mediaPicker'; wrap.style.cssText = 'position:fixed;inset:0;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,.55);z-index:80;';
-          const box = document.createElement('div'); box.style.cssText = 'background:#11161c;color:#e6e9ec;max-width:680px;width:100%;max-height:70vh;display:flex;flex-direction:column;border-radius:14px;box-shadow:0 6px 30px rgba(0,0,0,.55);font:13px system-ui;';
-          box.innerHTML = '<div style="display:flex;align-items:center;gap:10px;padding:14px 16px;border-bottom:1px solid #222a32;"><span style="font:600 15px system-ui;flex:1">Select Media</span><button id="mpHome" style="all:unset;cursor:pointer;padding:6px 10px;border-radius:18px;background:#222;font:12px system-ui">Home</button><button id="mpClose" style="all:unset;cursor:pointer;padding:6px 10px;border-radius:18px;background:#222;font:12px system-ui">Close</button></div>';
-          const inner = document.createElement('div'); inner.style.cssText = 'overflow:auto;flex:1;padding:12px 16px;display:flex;flex-direction:column;gap:6px;';
-          const search = document.createElement('input'); search.type = 'text'; search.placeholder = 'Filter...'; search.style.cssText = 'background:#0d1216;border:1px solid #25313b;border-radius:6px;padding:6px 8px;color:#e6e9ec;font:13px system-ui;margin:0 16px 10px;';
-          const status = document.createElement('div'); status.textContent = 'Loading...'; status.style.cssText = 'padding:4px 0;font:12px system-ui;opacity:.7;';
+          const wrap = document.createElement('div'); wrap.id = 'mediaPicker'; wrap.className = 'media-picker-overlay';
+          const box = document.createElement('div'); box.className = 'media-picker-box';
+          box.innerHTML = '<div class="media-picker-header"><span class="title">Select Media</span><button id="mpHome" class="btn-chip">Home</button><button id="mpClose" class="btn-chip">Close</button></div>';
+          const inner = document.createElement('div'); inner.className = 'media-picker-inner';
+          const search = document.createElement('input'); search.type = 'text'; search.placeholder = 'Filter...'; search.className = 'input-filter';
+          const status = document.createElement('div'); status.textContent = 'Loading...'; status.className = 'status-label';
           inner.appendChild(status);
           function shortName(rel) { return rel.split(/[\\/]/).pop(); }
           function highlightCurrent(el, rel) { if (lastState && lastState.path === rel) { el.style.background = '#2e78d2'; el.style.color = '#fff'; } }
           function render(list) {
-            inner.innerHTML = ''; inner.appendChild(search); if (!list.length) { const empty = document.createElement('div'); empty.textContent = '(no media files)'; empty.style.cssText = 'opacity:.6;font:12px system-ui;padding:4px 2px;'; inner.appendChild(empty); return; }
+            inner.innerHTML = ''; inner.appendChild(search); if (!list.length) { const empty = document.createElement('div'); empty.textContent = '(no media files)'; empty.className = 'empty-label'; inner.appendChild(empty); return; }
             list.forEach(rel => {
-              const row = document.createElement('div'); row.style.cssText = 'display:flex;align-items:center;gap:10px;padding:6px 10px;border-radius:8px;cursor:pointer;background:#1a232b;font:12px/1.3 system-ui;'; row.tabIndex = 0; row.innerHTML = '<span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">' + rel.replace(/</g, '&lt;') + '</span><span style="opacity:.65;font-size:11px;">' + shortName(rel) + '</span>';
+              const row = document.createElement('div'); row.className = 'picker-row'; row.tabIndex = 0; row.innerHTML = '<span class="flex-grow truncate">' + rel.replace(/</g, '&lt;') + '</span><span class="muted fs-11">' + shortName(rel) + '</span>';
               highlightCurrent(row, rel);
               row.onmouseenter = () => { if (!(lastState && lastState.path === rel)) row.style.background = '#25313b'; };
               row.onmouseleave = () => { if (!(lastState && lastState.path === rel)) row.style.background = '#1a232b'; };
@@ -626,7 +330,7 @@
         ctr.appendChild(mediaBtn);
       }
       // Expose helper to auto-enable default subtitles (English preferred)
-      window.enableDefaultSubs = async function(spec='eng'){
+      window.enableDefaultSubs = async function(spec=(WP_CLIENT_CONFIG?.subtitles?.preferredLang||'eng')){
         if (subsEnabled){ autoSubsAttempted=true; return true; }
         try {
           const ok = await ensureSubTrack(spec);
@@ -635,50 +339,50 @@
           autoSubsAttempted=true; return true;
         } catch { return false; }
       };
-  function scheduleAutoSubs(retries=3){
+  function scheduleAutoSubs(retries=(WP_CLIENT_CONFIG?.subtitles?.autoEnableRetriesInitial||5)){
         if(subsEnabled || autoSubsAttempted) return;
         setTimeout(async ()=>{
           if(subsEnabled) return;
           const ok = await window.enableDefaultSubs('eng');
           if(!ok && retries>0) scheduleAutoSubs(retries-1);
-        }, 300);
+  }, (WP_CLIENT_CONFIG?.subtitles?.autoEnableDelayMs)||300);
       }
   // Expose for outside callers (e.g., metadata listener)
   window.scheduleAutoSubs = scheduleAutoSubs;
   const fsBtn = mkBtn('⛶', 'Fullscreen');
   fsBtn.setAttribute('data-darkreader-ignore','');
       // Enlarge fullscreen button to match pill group height
-      fsBtn.style.padding = '6px 14px';
-      fsBtn.style.fontSize = '13px';
-      fsBtn.style.borderRadius = '24px';
+  fsBtn.classList.add('btn-large');
       fsBtn.onclick = () => { if (document.fullscreenElement) document.exitFullscreen(); else videoWrap.requestFullscreen().catch(() => { }); };
       // Double click toggles wrapper fullscreen (prevents native video-only fs)
       video.addEventListener('dblclick', e => { e.preventDefault(); if (document.fullscreenElement) document.exitFullscreen(); else videoWrap.requestFullscreen().catch(() => { }); });
-      const subBtn = mkBtn('CC', 'Toggle Subtitles');
-      const ccSelect = document.createElement('select'); ccSelect.style.cssText = 'background:#222;color:#fff;border:1px solid #333;border-radius:18px;padding:4px 6px;font:12px system-ui;display:none;max-width:170px;';
+  const subBtn = mkBtn('CC', 'Toggle Subtitles');
+  subBtn.classList.add('btn-media-opt');
+  const ccSelect = document.createElement('select'); ccSelect.className = 'select-chip'; ccSelect.style.display = 'none'; ccSelect.style.maxWidth = '170px';
       // Removed Picture-in-Picture / Pop-out feature
-      const volWrap = document.createElement('div'); volWrap.style.cssText = 'display:flex;align-items:center;gap:6px;background:#222;border-radius:24px;padding:4px 12px;transition:background .15s;';
+  const volWrap = document.createElement('div'); volWrap.className = 'cluster';
       volWrap.onmouseenter = () => volWrap.style.background = '#333';
       volWrap.onmouseleave = () => volWrap.style.background = '#222';
-      const styleSelect = document.createElement('select'); styleSelect.style.cssText = 'background:#222;color:#fff;border:1px solid #333;border-radius:18px;padding:4px 6px;font:12px system-ui;display:inline-block;max-width:150px;';
+  const styleSelect = document.createElement('select'); styleSelect.className = 'select-chip'; styleSelect.style.display = 'inline-block'; styleSelect.style.maxWidth = '150px';
       STYLE_IDS.forEach(id => { const o = document.createElement('option'); o.value = id; o.textContent = { default: 'Default', outline: 'Outline', yellow: 'Yellow', box: 'Box' }[id]; styleSelect.appendChild(o); });
-      styleSelect.value = currentStyle; styleSelect.onchange = () => applyStyle(styleSelect.value);
+  styleSelect.value = currentStyle; styleSelect.onchange = () => { const prev = currentStyle; applyStyle(styleSelect.value); telemetry('subs.style.change',{from: prev, to: styleSelect.value}); };
       const volLabel = document.createElement('span'); volLabel.textContent = 'Vol'; volLabel.style.fontSize = '12px';
     const vol = document.createElement('input'); vol.type = 'range'; vol.min = '0'; vol.max = '1'; vol.step = '0.01';
   vol.value = (video.volume && video.volume > 0) ? video.volume : 1;
-  vol.style.width = '90px';
   // Restore unmute-on-volume-change logic so viewer can enable sound after autoplay.
-  vol.oninput = () => { video.volume = Number(vol.value); if(video.volume>0 && video.muted){ video.muted = false; } };
+  function updateVolFill(){ const v = Number(vol.value); const pct = v*100; vol.style.setProperty('--pct', pct+'%'); }
+  vol.oninput = () => { const before = video.volume; video.volume = Number(vol.value); if(video.volume>0 && video.muted){ video.muted = false; } telemetry('media.volume.change',{from: before, to: video.volume, muted: video.muted}); updateVolFill(); };
+  setTimeout(updateVolFill,40);
       volWrap.appendChild(volLabel); volWrap.appendChild(vol);
       // Group CC related controls into a single pill
-      const ccWrap = document.createElement('div');
-      ccWrap.style.cssText = 'display:flex;align-items:center;gap:6px;background:#222;border-radius:24px;padding:4px 10px;transition:background .15s;';
+    const ccWrap = document.createElement('div');
+  ccWrap.className = 'cluster cluster-tight';
       ccWrap.onmouseenter = () => ccWrap.style.background = '#333';
       ccWrap.onmouseleave = () => ccWrap.style.background = '#222';
       // Audio track selection button (cycles embedded audio tracks)
   const audioBtn = mkBtn('Audio', 'Cycle audio track');
   audioBtn.setAttribute('data-darkreader-ignore','');
-      audioBtn.style.padding = '4px 10px';
+      audioBtn.classList.add('btn-media-opt');
       let audioTracksMeta = []; // [{index,lang,title,default}]
       let currentAudioLogical = null; // index within audioTracksMeta array
       let sidecarMode = false; // true when using external Audio element
@@ -785,7 +489,11 @@
       audioBtn.onclick = () => {
         if (!audioTracksMeta.length) { loadAudioTracks(); return; }
         if (currentAudioLogical==null) currentAudioLogical=0; else currentAudioLogical = (currentAudioLogical+1) % audioTracksMeta.length;
-        applyAudioSelection(); updateAudioBtn(); showToast('Audio: ' + friendlyAudioLabel(audioTracksMeta.find(t=>t.logical===currentAudioLogical)));
+        const prev = sidecarMode? ('sidecar:'+sidecarLang): ('embedded:'+currentAudioLogical);
+        applyAudioSelection(); updateAudioBtn();
+        const curMeta = audioTracksMeta.find(t=>t.logical===currentAudioLogical);
+        telemetry('audio.track.cycle',{from: prev, to: sidecarMode? ('sidecar:'+sidecarLang): ('embedded:'+currentAudioLogical), label: friendlyAudioLabel(curMeta)});
+        showToast('Audio: ' + friendlyAudioLabel(curMeta));
       };
       // Expose a global helper to forcibly stop & remove sidecar audio (used on unload transitions for viewers)
       window.stopSidecarAudio = function(){
@@ -795,29 +503,31 @@
         sidecarAudioEl=null; sidecarLang=null; sidecarMode = false;
       };
       // Maintain sidecar play/pause sync
-      video.addEventListener('play', ()=>{ if(sidecarMode && sidecarAudioEl){ const p=sidecarAudioEl.play(); if(p&&p.catch)p.catch(()=>{}); }});
-      video.addEventListener('pause', ()=>{ if(sidecarMode && sidecarAudioEl) sidecarAudioEl.pause(); });
+  video.addEventListener('play', ()=>{ telemetry('media.play.local'); if(sidecarMode && sidecarAudioEl){ const p=sidecarAudioEl.play(); if(p&&p.catch)p.catch(()=>{}); }});
+  video.addEventListener('pause', ()=>{ telemetry('media.pause.local'); if(sidecarMode && sidecarAudioEl) sidecarAudioEl.pause(); });
       video.addEventListener('seeking', ()=>{ if(sidecarMode && sidecarAudioEl){ try { sidecarAudioEl.currentTime = video.currentTime; } catch{} } });
   // Guard against dual playback: if both video (unmuted) and sidecar playing, mute video
   setInterval(()=>{ if(sidecarMode && sidecarAudioEl && !video.paused){ if(!video.muted && !sidecarAudioEl.paused){ video.muted = true; } } }, 1000);
       // Re-probe audio tracks when metadata loads or media changes
-      video.addEventListener('loadedmetadata', () => { setTimeout(loadAudioTracks, 100); });
+  video.addEventListener('loadedmetadata', () => { telemetry('media.audio.trackscan.start'); setTimeout(()=>{ loadAudioTracks(); telemetry('media.audio.trackscan.done'); }, 100); });
       const __origApplyState = applyState; // intercept to detect media change
       applyState = function(s){
         const oldPath = lastState && lastState.path;
         __origApplyState(s);
         if (!s || s.path !== oldPath) { audioTracksMeta=[]; currentAudioLogical=null; updateAudioBtn(); if (s && s.path) setTimeout(loadAudioTracks, 250); }
       };
-      ccWrap.appendChild(audioBtn);
-      ccWrap.appendChild(subBtn); ccWrap.appendChild(ccSelect); ccWrap.appendChild(styleSelect);
-      ctr.appendChild(fsBtn); ctr.appendChild(ccWrap); ctr.appendChild(volWrap);
-      // If admin seek bar exists, move volume group before it
-      setTimeout(() => { if (typeof seekWrap !== 'undefined' && seekWrap && volWrap.parentNode === ctr) { ctr.insertBefore(volWrap, seekWrap); } }, 0);
+  ccWrap.appendChild(audioBtn);
+  ccWrap.appendChild(subBtn); ccWrap.appendChild(ccSelect); ccWrap.appendChild(styleSelect);
+  // Append CC group and volume now; fullscreen will be appended at the very end to guarantee rightmost position
+  ctr.appendChild(ccWrap); ctr.appendChild(volWrap);
+  // (Removed previous volume reposition hack; we will explicitly place volume at far left after assembling remaining buttons.)
       // Chat toggle button (moved from separate expand/collapse UI)
   const chatToggleBtn = mkBtn('Chat', 'Toggle Chat Panel');
   chatToggleBtn.setAttribute('data-darkreader-ignore','');
+  // Match sizing of Play/Media/Fullscreen buttons
+  chatToggleBtn.classList.add('btn-large');
       // Robust home cleanup helper
-      function forceHomeCleanup(){
+  function forceHomeCleanup(){ telemetry('home.forceCleanup');
         const afterExit = ()=>{
           try { if(sidecarAudioEl){ sidecarAudioEl.pause(); sidecarAudioEl.remove(); sidecarAudioEl=null; sidecarLang=null; } } catch{}
           try { video.pause(); video.removeAttribute('src'); video.load(); } catch{}
@@ -825,7 +535,7 @@
           noMediaGlobal = true;
           if (typeof startStarfield==='function') startStarfield();
           if (video) video.style.display='none';
-          if (homeSelectEl) homeSelectEl.style.display='inline-flex';
+          if (homeSelectEl) { homeSelectEl.classList.remove('hidden'); homeSelectEl.classList.add('inline-flex'); }
         };
         // If video currently visible trigger exit wipe with starfield starting behind
         if(video && video.style.display!== 'none') {
@@ -834,7 +544,7 @@
         } else { afterExit(); }
       }
       // Fallback safety: if unload state not reflected after 2s, force local cleanup
-      function scheduleHomeFallback(){ setTimeout(()=>{ if(!lastState || lastState.path){ forceHomeCleanup(); } }, 2000); }
+  function scheduleHomeFallback(){ setTimeout(()=>{ if(!lastState || lastState.path){ telemetry('home.fallback.trigger'); forceHomeCleanup(); } }, 2000); }
       function updateChatToggle() {
         const open = !chatPanel.classList.contains('collapsed');
         chatToggleBtn.textContent = 'Chat';
@@ -844,24 +554,30 @@
       window.updateChatToggle = updateChatToggle;
       // Apply persisted collapsed state before initial styling
   if (localStorage.chatCollapsed === '1') { chatPanel.classList.add('collapsed'); } else { chatPanel.classList.remove('collapsed'); }
-      chatToggleBtn.onclick = () => { if (chatPanel.classList.contains('collapsed')) { expandChat(); } else { collapseChat(); } updateChatToggle(); updateFloatingVisibility(); };
+  chatToggleBtn.onclick = () => { const opening = chatPanel.classList.contains('collapsed'); if (opening) { expandChat(); } else { collapseChat(); } updateChatToggle(); updateFloatingVisibility(); telemetry('chat.toggle', {open: opening}); };
       // (chat button appended after overlay to get order: overlay then chat)
       // Floating chat overlay toggle (converted to button)
       const overlayBtn = mkBtn('Overlay', 'Show chat overlay when chat is collapsed or fullscreen');
+  // Match large pill sizing
+  overlayBtn.classList.add('btn-large');
       function overlayActive() { return localStorage.floatChatEnabled !== '0'; }
       function updateOverlayBtn() {
         const active = overlayActive();
-        if (active) { overlayBtn.dataset.active = '1'; overlayBtn.style.background = '#2e78d2'; overlayBtn.style.color = '#fff'; }
-        else { delete overlayBtn.dataset.active; overlayBtn.style.background = '#222'; overlayBtn.style.color = '#eee'; }
+        overlayBtn.classList.remove('btn-active','btn-inactive');
+        if (active) { overlayBtn.dataset.active = '1'; overlayBtn.classList.add('btn-active'); }
+        else { delete overlayBtn.dataset.active; overlayBtn.classList.add('btn-inactive'); }
       }
-      overlayBtn.onclick = () => { localStorage.floatChatEnabled = overlayActive() ? '0' : '1'; updateOverlayBtn(); updateFloatingVisibility(); };
+  overlayBtn.onclick = () => { const now = !(overlayActive()); localStorage.floatChatEnabled = now ? '1' : '0'; updateOverlayBtn(); updateFloatingVisibility(); telemetry('overlay.toggle', {on: now}); };
       updateOverlayBtn();
       ctr.appendChild(overlayBtn);
   // Dev status overlay (admin only)
   let devPanel=null; let devVisible=false; let devTimer=null;
   function formatMs(ms){ const s=Math.floor(ms/1000); const m=Math.floor(s/60); const h=Math.floor(m/60); const ss=(s%60).toString().padStart(2,'0'); const mm=(m%60).toString().padStart(2,'0'); if(h) return h+':'+mm+':'+ss; return mm+':'+ss; }
-  function ensureDevPanel(){ if(devPanel) return; devPanel=document.createElement('div'); devPanel.id='devPanel'; devPanel.style.cssText='position:absolute;right:40px;bottom:110px;z-index:35;max-width:420px;background:rgba(0,0,0,.7);backdrop-filter:blur(4px);padding:12px 14px;border-radius:10px;font:12px system-ui;color:#fff;display:none;box-shadow:0 4px 20px rgba(0,0,0,.5);'; devPanel.innerHTML='<div style="font:600 13px system-ui;margin:0 0 6px;display:flex;align-items:center;gap:8px;">Connections <span id="devRefresh" style="cursor:pointer;background:#222;padding:2px 6px;border-radius:4px;">⟳</span></div><div id="devBody" style="display:flex;flex-direction:column;gap:4px;max-height:300px;overflow:auto;"></div>'; videoWrap.appendChild(devPanel); devPanel.querySelector('#devRefresh').onclick=fetchStatus; }
-  async function fetchStatus(){ if(!devVisible) return; try { const r=await fetch('/api/debug/clients?_=' + Date.now()); if(!r.ok) return; const j=await r.json(); const body=devPanel.querySelector('#devBody'); body.innerHTML=''; (j.clients||[]).forEach(c=>{ const driftStr = (c.drift==null)?'--': ( (c.drift>0?'+':'') + c.drift.toFixed(2)+'s'); const row=document.createElement('div'); row.style.cssText='display:flex;gap:6px;align-items:center;background:#1a232b;padding:4px 6px;border-radius:6px;font:11px system-ui;'; row.innerHTML=`<span style="min-width:18px;text-align:right;opacity:.65;">${c.id}</span><span style="font-weight:600;color:${CHAR_COLOR_HEX[c.color]||'#ccc'}">${c.name||c.color||'anon'}</span><span style="opacity:.7;">${c.color||''}</span><span style="margin-left:auto;opacity:.85;">${formatMs(c.connectedMs||0)}</span><span style="width:70px;text-align:right;font-variant-numeric:tabular-nums;${c.drift&&Math.abs(c.drift)>5?'color:#ffb347;font-weight:600;':''}">${driftStr}</span>`; body.appendChild(row); }); } catch(e){ console.warn('dev fetch fail',e); } }
+  function ensureDevPanel(){ if(devPanel) return; devPanel=document.createElement('div'); devPanel.id='devPanel'; devPanel.className='dev-panel'; devPanel.innerHTML='<div class="dev-header">Connections <span id="devRefresh" class="dev-refresh">⟳</span></div><div id="devBody" class="dev-rows"></div>'; videoWrap.appendChild(devPanel); devPanel.querySelector('#devRefresh').onclick=fetchStatus; }
+  // Telemetry helpers
+  function telemetry(ev, data){ try { if(ws && ws.readyState===1){ ws.send(JSON.stringify({type:'telemetry', ev, data, ts:Date.now()})); } } catch(e){} }
+  function telemetricClick(el, evName, extra){ if(!el) return; el.addEventListener('click', (e)=> telemetry(evName, typeof extra==='function'? extra(e): extra)); }
+  async function fetchStatus(){ if(!devVisible) return; try { const r=await fetch('/api/debug/clients?_=' + Date.now()); if(!r.ok) return; const j=await r.json(); const body=devPanel.querySelector('#devBody'); body.innerHTML=''; (j.clients||[]).forEach(c=>{ const driftStr = (c.drift==null)?'--': ( (c.drift>0?'+':'') + c.drift.toFixed(2)+'s'); const downKBs = c.downBps!=null? (c.downBps/1024).toFixed(1)+'kB/s':'--'; const upKBs = c.upBps!=null? (c.upBps/1024).toFixed(1)+'kB/s':'--'; const totalIn = c.bytesIn!=null? (c.bytesIn/1024).toFixed(0)+'kB':'--'; const totalOut = c.bytesOut!=null? (c.bytesOut/1024).toFixed(0)+'kB':'--'; const row=document.createElement('div'); row.className='dev-row'; const driftWarn = (c.drift&&Math.abs(c.drift)>5); row.innerHTML=`<span class="id-col">${c.id}</span><span class="name-col" style="color:${CHAR_COLOR_HEX[c.color]||'#ccc'}">${c.name||c.color||'anon'}</span><span class="color-col">${c.color||''}</span><span class="connected-col">${formatMs(c.connectedMs||0)}</span><span class="drift-col ${driftWarn?'drift-warn':''}">${driftStr}</span><span class="kb-col">${downKBs}</span><span class="kb-col">${upKBs}</span><span class="total-col">${totalIn}</span><span class="total-col">${totalOut}</span>`; body.appendChild(row); }); } catch(e){ console.warn('dev fetch fail',e); } }
   function toggleDev(){
     if(!isAdmin) return;
     ensureDevPanel();
@@ -870,27 +586,36 @@
     if(devVisible){
       fetchStatus();
       if(devTimer) clearInterval(devTimer);
-      devTimer=setInterval(fetchStatus,4000);
+  devTimer=setInterval(fetchStatus,(WP_CLIENT_CONFIG?.dev?.refreshIntervalMs)||4000);
     } else {
       if(devTimer){ clearInterval(devTimer); devTimer=null; }
     }
     updateDevBtn();
   }
   const devBtn = mkBtn('Dev','Show connection status');
+  // Match large pill sizing
+  devBtn.classList.add('btn-large');
   function updateDevBtn(){
-    if(devVisible){
-      devBtn.dataset.active='1';
-      devBtn.style.background='#2e78d2';
-      devBtn.style.color='#fff';
-    } else {
-      delete devBtn.dataset.active;
-      devBtn.style.background='#222';
-      devBtn.style.color='#eee';
-    }
+    devBtn.classList.remove('btn-active','btn-inactive');
+    if(devVisible){ devBtn.dataset.active='1'; devBtn.classList.add('btn-active'); }
+    else { delete devBtn.dataset.active; devBtn.classList.add('btn-inactive'); }
   }
-  if(isAdmin){ devBtn.onclick=toggleDev; ctr.appendChild(devBtn); updateDevBtn(); }
-      ctr.appendChild(chatToggleBtn);
-      updateChatToggle();
+  if(isAdmin){ devBtn.onclick=(e)=>{ telemetry('dev.toggle', {on: !devVisible}); toggleDev(); }; ctr.appendChild(devBtn); updateDevBtn(); }
+  ctr.appendChild(chatToggleBtn);
+  updateChatToggle();
+      // Final ordering adjustments:
+      // Admin: Play (leftmost), then Volume; Viewer: Volume leftmost. Fullscreen always rightmost.
+      if (isAdmin && playBtn && playBtn.parentNode === ctr) {
+        ctr.insertBefore(playBtn, ctr.firstChild);
+      }
+      if (volWrap.parentNode === ctr) {
+        if (isAdmin && playBtn && playBtn.parentNode === ctr) {
+          ctr.insertBefore(volWrap, playBtn.nextSibling);
+        } else {
+          ctr.insertBefore(volWrap, ctr.firstChild);
+        }
+      }
+      ctr.appendChild(fsBtn);
       function updateSubBtn() {
         subBtn.textContent = 'CC';
         if (subsEnabled && subTrackEl && subTrackEl.track) { subBtn.dataset.active = '1'; subBtn.style.background = '#2e78d2'; subBtn.style.color = '#fff'; }
@@ -920,8 +645,8 @@
   ccSelect.style.display = 'inline-block';
   if (subsEnabled && currentLang) ccSelect.value = currentLang;
       }
-  subBtn.onclick = async () => { if (!subsEnabled) { const ok = await ensureSubTrack(currentLang||'eng'); if (!ok) { showToast('No subtitles'); return; } subsEnabled = true; updateSubBtn(); await buildCcSelect(); if(currentLang) ccSelect.value = currentLang; renderActiveCues(); } else { subsEnabled = false; updateSubBtn(); clearOverlay(); if (subTrackEl && subTrackEl.track) subTrackEl.track.mode = 'hidden'; } };
-      ccSelect.onchange = async () => { const v = ccSelect.value; if (!v) return; const ok = await ensureSubTrack(v); if (ok) { subsEnabled = true; updateSubBtn(); renderActiveCues(); } };
+  subBtn.onclick = async () => { if (!subsEnabled) { const ok = await ensureSubTrack(currentLang||'eng'); if (!ok) { showToast('No subtitles'); telemetry('subs.enable.fail'); return; } subsEnabled = true; updateSubBtn(); await buildCcSelect(); if(currentLang) ccSelect.value = currentLang; renderActiveCues(); telemetry('subs.enable', {lang: currentLang||'eng'}); } else { subsEnabled = false; updateSubBtn(); clearOverlay(); if (subTrackEl && subTrackEl.track) subTrackEl.track.mode = 'hidden'; telemetry('subs.disable'); } };
+  ccSelect.onchange = async () => { const v = ccSelect.value; if (!v) return; const prev = currentLang; const ok = await ensureSubTrack(v); if (ok) { subsEnabled = true; updateSubBtn(); renderActiveCues(); telemetry('subs.lang.change',{from: prev, to: v}); } };
       updateSubBtn();
       // Hook into media change by observing src changes
       const mo = new MutationObserver(muts => { for (const m of muts) { if (m.attributeName === 'src') { refreshSubs(); } } });
@@ -932,14 +657,14 @@
       const floatChat = document.createElement('div');
       floatChat.id = 'floatChat';
       // Floating chat styling adjusted: more right offset, left alignment
-      floatChat.style.cssText = 'position:absolute;right:38px;bottom:110px;display:flex;flex-direction:column;align-items:stretch;gap:4px;max-width:42%;pointer-events:none;z-index:28;font:14px/1.25 system-ui;';
+  floatChat.className = 'float-chat';
       videoWrap.appendChild(floatChat);
       function shouldShowFloating() { const enabled = (localStorage.floatChatEnabled !== '0'); const minimized = chatPanel.classList.contains('collapsed'); const fs = isFullscreen(); return enabled && (minimized || fs); }
       function updateFloatingVisibility() { floatChat.style.display = shouldShowFloating() ? 'flex' : 'none'; }
       window.updateFloatingVisibility = updateFloatingVisibility;
       // overlayBtn handles toggling now
   document.addEventListener('fullscreenchange', () => { updateFloatingVisibility(); try { if (document.fullscreenElement) { chatToggleBtn.style.display='none'; } else { chatToggleBtn.style.display='inline-flex'; } if (typeof recenter==='function') recenter(); } catch{} });
-      setInterval(() => { if (subsEnabled) renderActiveCues(); }, 600);
+  setInterval(() => { if (subsEnabled) renderActiveCues(); }, (WP_CLIENT_CONFIG?.subtitles?.layoutRefreshIntervalMs)||600);
       window.addEventListener('resize', () => { if (subsEnabled) layoutSubs(); resizeSeek(); });
       function resizeSeek(){
         if(!seekWrap || !seek) return;
@@ -954,12 +679,12 @@
           seek.style.width = target + 'px';
         } catch {}
       }
-      setTimeout(resizeSeek, 400);
-      setInterval(resizeSeek, 1500); // periodic sanity adjustment
-      video.addEventListener('loadedmetadata', layoutSubs);
+  setTimeout(resizeSeek, (WP_CLIENT_CONFIG?.controls?.seekInitialResizeDelayMs)||400);
+  setInterval(resizeSeek, (WP_CLIENT_CONFIG?.controls?.seekResizeIntervalMs)||1500); // periodic sanity adjustment
+  video.addEventListener('loadedmetadata', ()=>{ layoutSubs(); telemetry('subs.layout'); });
 
       // Hover / inactivity fade logic
-      let hideTimer = null; const HIDE_AFTER = 10000; // 10s idle inside player before auto-hide
+      let hideTimer = null; const HIDE_AFTER = (WP_CLIENT_CONFIG?.chat?.hideAfterMs)||10000; // idle before auto-hide
       function recenter() {
         // Center contents by distributing unused space with pseudo flex spacer
         // Already using justify-content:center, so nothing extra for viewer.
@@ -1001,7 +726,7 @@
       // Auto-enable subtitles on first load
   // Removed early auto-enable; handled via scheduleAutoSubs on media load
       // Initial reveal
-      setTimeout(showCtr, 100);
+  setTimeout(showCtr, (WP_CLIENT_CONFIG?.controls?.initialShowDelayMs)||100);
       video.addEventListener('contextmenu', e => e.preventDefault());
       // Optionally prevent manual seeking via keyboard/mouse (native controls removed anyway)
       video.addEventListener('seeking', () => { if (!isAdmin && lastState && Math.abs(video.currentTime - lastState.t) > 1) { suppress = true; video.currentTime = lastState.t; setTimeout(() => suppress = false, 40); } });
@@ -1012,7 +737,10 @@
       const url = base + `?key=${encodeURIComponent(ADMIN_KEY||'')}`;
       ws = new WebSocket(url);
   ws.onopen = () => { log('ws open'); pingLoop(); };
-      ws.onclose = () => log('ws close');
+      ws.onclose = (ev) => { log('ws close', ev.code, ev.reason); if(isAdmin && ev.code===4003){
+        // Replace body with notice (fallback if HTTP race allowed page to load before admin connected)
+        document.body.innerHTML = '<div style="font:600 20px system-ui;margin:40px auto;max-width:600px;color:#e6e6e6;padding:32px 38px;background:#121a21;border:1px solid #1d2a33;border-radius:18px;line-height:1.55"><h1 style="margin:0 0 14px;font:600 22px system-ui;letter-spacing:.4px">Admin Session Active</h1><p style="margin:0 0 14px;font:14px/1.55 system-ui">Another admin is already connected. Only one admin session is allowed. If you believe this is stale, wait and retry.</p><button style="all:unset;background:#2e78d2;color:#fff;padding:10px 16px;border-radius:10px;cursor:pointer;font:600 13px system-ui;letter-spacing:.3px" onclick="location.reload()">Retry</button></div>';
+      } };
       ws.onmessage = wsMessage;
     }
     let suppress = false;
@@ -1027,7 +755,7 @@
     function log(...a) { console.log('[sync]', ...a); }
     // UI overlays
     const overlay = document.createElement('div');
-    overlay.style.cssText = 'position:fixed;top:6px;left:6px;font:12px system-ui;background:rgba(0,0,0,.55);color:#fff;padding:4px 8px;border-radius:6px;z-index:10;pointer-events:none;' + (VERBOSE ? '' : 'display:none;');
+  overlay.className = 'status-overlay'; if(!VERBOSE) overlay.style.display='none';
     overlay.textContent = 'sync...';
     document.body.appendChild(overlay);
     let lastRev = null;
@@ -1035,7 +763,7 @@
   const telem = { lastCT: 0, stagnation: 0, playErrors: 0, notAllowed: 0, playSuccess: 0, seekAdjusts: 0, enforcedPauses: 0 };
   function bufferRanges() { const arr = []; try { for (let i=0;i<video.buffered.length;i++){ arr.push([video.buffered.start(i).toFixed(2), video.buffered.end(i).toFixed(2)]); } } catch {} return arr; }
   function sampleTelemetry(){ if(isAdmin) return; const ct=video.currentTime; const d=ct - telem.lastCT; if(!video.paused && d < 0.05) telem.stagnation++; else telem.stagnation=0; const stalled = (!video.paused && telem.stagnation>=3 && video.readyState>=3); console.log('[telem]', {ct:ct.toFixed(2), d:d.toFixed(2), paused:video.paused, muted:video.muted, rs:video.readyState, ns:video.networkState, buf:bufferRanges(), playOK:telem.playSuccess, playErr:telem.playErrors, notAllowed:telem.notAllowed, seekAdj:telem.seekAdjusts, enforcedPauses:telem.enforcedPauses, stalled}); telem.lastCT=ct; }
-  setInterval(sampleTelemetry, 1000);
+  setInterval(sampleTelemetry, (WP_CLIENT_CONFIG?.telemetry?.sampleIntervalMs)||1000);
   function ensureViewerPlaying(){
     if(isAdmin) return;
     if(!lastState || lastState.paused) return;
@@ -1052,12 +780,23 @@
         let delta = (now - s.ts - latencyMs) / 1000; if (delta < 0) delta = 0; target += delta;
       }
   const drift = video.currentTime - target;
+      // Detect an admin seek (revision does NOT change on seek). Heuristic: new base t differs from predicted timeline > 1.5s
+      let isSeek = false;
+      if (prev) {
+        let expectedFromPrev = prev.t;
+        if (!prev.paused) {
+          let d = (s.ts - prev.ts) / 1000; if (d < 0) d = 0; expectedFromPrev += d;
+        }
+        if (Math.abs(s.t - expectedFromPrev) > 1.5) {
+          isSeek = true; window.__lastSeekTs = now;
+        }
+      }
       const noMedia = !s.path;
       if (noMedia) {
         const wasPlayingMedia = !noMediaGlobal; // transition from media -> home
         if (!noMediaGlobal) noMediaGlobal = true;
         if (typeof hideCtr === 'function') hideCtr();
-        if (isAdmin) { ensureHomeSelect(); if (homeSelectEl) homeSelectEl.style.display = 'inline-flex'; }
+  if (isAdmin) { ensureHomeSelect(); if (homeSelectEl) { homeSelectEl.classList.remove('hidden'); homeSelectEl.classList.add('inline-flex'); } }
         if (video) {
           if (wasPlayingMedia) {
             // Begin starfield behind video before collapsing so wipe reveals it
@@ -1089,7 +828,7 @@
         const wasHome = noMediaGlobal;
         if (noMediaGlobal) noMediaGlobal = false;
         if (wasHome) stopStarfield(); // only stop when actually leaving home
-        if (homeSelectEl) homeSelectEl.style.display = 'none';
+  if (homeSelectEl) { homeSelectEl.classList.add('hidden'); homeSelectEl.classList.remove('inline-flex'); }
         if (wasHome && typeof showCtr === 'function') showCtr();
         if (video) {
           if (wasHome) { triggerWipeEnter(); }
@@ -1116,7 +855,7 @@
           // Wipe enter only if coming from home
           if (noMediaGlobal) triggerWipeEnter();
           // Attempt to auto-enable subtitles with retries
-          autoSubsAttempted=false; scheduleAutoSubs(5);
+          autoSubsAttempted=false; scheduleAutoSubs((WP_CLIENT_CONFIG?.subtitles?.autoEnableRetriesInitial)||5);
         } else {
           // Unloaded -> home; src removal & animation handled in main noMedia branch above
         }
@@ -1131,7 +870,11 @@
         // After first successful metadata seek mark sync complete (once we have some data)
         if (video.readyState >= 2) { initialSync = false; }
       }
-  // Drift auto-correction disabled (only initial sync + admin actions)
+      // On explicit seek, jump viewer to new target immediately (prevents giant drift + false alerts)
+      if(!isAdmin && isSeek) {
+        suppress = true; try { video.currentTime = target; } catch{} setTimeout(()=> suppress=false, 60);
+      }
+      // Drift auto-correction still disabled outside seeks; only enforce pause/play alignment
       if(!isAdmin){
         if(s.paused){
           if(!video.paused){ suppress=true; video.pause(); setTimeout(()=>suppress=false,30); telem.enforcedPauses++; }
@@ -1151,8 +894,11 @@
     video.addEventListener('loadedmetadata', () => {
       if (pendingTarget != null) { suppress = true; video.currentTime = pendingTarget; pendingTarget = null; setTimeout(() => suppress = false, 60); }
       if (!isAdmin && lastState && !lastState.paused) ensureViewerPlaying();
-      if(!subsEnabled) scheduleAutoSubs(3);
+  if(!subsEnabled) scheduleAutoSubs((WP_CLIENT_CONFIG?.subtitles?.autoEnableRetriesMetadata)||3);
+      telemetry('media.loadedmeta.viewer', {t: video.currentTime, dur: video.duration||0});
     });
+    video.addEventListener('play', ()=> telemetry('media.play.auto'));
+    video.addEventListener('pause', ()=> telemetry('media.pause.auto'));
     // Removed separate collapse/expand buttons; control bar button handles it
     let chatAutoScroll = true;
     function esc(t) { return t.replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "\"": "&quot;", "'": "&#39;" }[c])); }
@@ -1253,7 +999,7 @@
         } else {
           const dot = document.createElement('span');
           dot.textContent = '●';
-          dot.style.cssText = 'font-size:10px;color:#888;';
+          dot.className = 'gray-mini-dot';
           chatUsersEl.appendChild(dot);
         }
       });
@@ -1265,7 +1011,7 @@
     updateFloatingVisibility();
     // Chat toggle after initial state
     setTimeout(() => { const btn = document.getElementById('customCtr')?.querySelector('button:last-child'); updateChatToggle(); }, 0);
-  function wsMessage(ev){ try { const msg = JSON.parse(ev.data); if (msg.type === 'state') { log('state', msg.data); applyState(msg.data); } else if (msg.type === 'toast') { if (msg.text === 'Pause requested' && !isAdmin) { /* suppress viewer toast */ } else { showToast(msg.text || ''); } } else if (msg.type === 'pong') { const now = Date.now(); if (lastPingSent) { const rtt = now - lastPingSent; latencyMs = Math.max(0, Math.round(rtt / 2)); } schedulePing(); } else if (msg.type === 'presence') { setUsers(msg.users); } else if (msg.type === 'chat-history') { msg.items.forEach(it => { if (it.type === 'chat') { appendChat(it); pushFloatingChat(it); } else if (it.type === 'system') appendSystem(it); }); } else if (msg.type === 'chat') { appendChat(msg); pushFloatingChat(msg); } else if (msg.type === 'system') { appendSystem(msg); } else if (msg.type === 'self') { appendSelfNotice(msg.id, msg.name, msg.color); currentSelf = msg; refreshNameButton(); } else if (msg.type === 'rename-result') { console.log('[rename-result]', msg); if (msg.ok) { if (currentSelf) { if (msg.name) currentSelf.name = msg.name; if (msg.color) currentSelf.color = msg.color; } refreshNameButton(); showToast('Name updated'); } else { if (msg.reason === 'in-use') showToast('Color in use'); else if (msg.reason === 'unchanged') showToast('No change'); else showToast('Rename failed'); } } } catch (e) { log('bad msg', e); } }
+  function wsMessage(ev){ try { const msg = JSON.parse(ev.data); if (msg.type === 'state') { log('state', msg.data); applyState(msg.data); } else if (msg.type === 'toast') { if (msg.text === 'Pause requested' && !isAdmin) { /* suppress viewer toast */ } else { showToast(msg.text || ''); } } else if (msg.type === 'pong') { const now = Date.now(); if (lastPingSent) { const rtt = now - lastPingSent; latencyMs = Math.max(0, Math.round(rtt / 2)); log('pong rtt', rtt, 'lat', latencyMs); } } else if (msg.type === 'presence') { setUsers(msg.users); } else if (msg.type === 'chat-history') { msg.items.forEach(it => { if (it.type === 'chat') { appendChat(it); pushFloatingChat(it); } else if (it.type === 'system') appendSystem(it); }); } else if (msg.type === 'chat') { appendChat(msg); pushFloatingChat(msg); } else if (msg.type === 'system') { appendSystem(msg); } else if (msg.type === 'self') { appendSelfNotice(msg.id, msg.name, msg.color); currentSelf = msg; refreshNameButton(); } else if (msg.type === 'rename-result') { console.log('[rename-result]', msg); if (msg.ok) { showToast('Name updated'); } else { if (msg.reason === 'in-use') showToast('Color in use'); else if (msg.reason === 'unchanged') showToast('No change'); else showToast('Rename failed'); } } } catch (e) { log('bad msg', e); } }
 
     // Rename popup UI
     // currentSelf already declared earlier
@@ -1276,19 +1022,19 @@
     function openRename() {
       if (!currentSelf) return;
       const wrap = document.createElement('div');
-      wrap.style.cssText = 'position:fixed;inset:0;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,.55);z-index:70;';
+  wrap.className = 'rename-overlay';
       const box = document.createElement('div');
-      box.style.cssText = 'background:#11161c;padding:18px 22px;border-radius:10px;max-width:420px;width:100%;color:#e6e9ec;font:13px system-ui;box-shadow:0 4px 22px rgba(0,0,0,.6);';
-      box.innerHTML = '<h3 style="margin:0 0 10px;font:600 15px system-ui">Choose a Character</h3>';
+  box.className = 'rename-box';
+  box.innerHTML = '<h3 class="rename-title">Choose a Character</h3>';
       const form = document.createElement('form'); form.style.display = 'grid'; form.style.gridTemplateColumns = '1fr 1fr'; form.style.gap = '6px 14px';
   // Name input (will be placed on bottom row with action buttons; create early for logic reuse)
   const nameInput = document.createElement('input');
   nameInput.type = 'text'; nameInput.maxLength = 40; nameInput.placeholder = 'Custom name (optional)';
-  nameInput.style.cssText = 'background:#0d1216;border:1px solid #25313b;border-radius:6px;padding:8px 10px;color:#e6e9ec;font:13px system-ui;flex:1;min-width:0;';
+  nameInput.className = 'name-input';
       const palette = (CHAR_PALETTE.length ? CHAR_PALETTE : ['frieren', 'himmel', 'heiter', 'eisen', 'fern', 'stark', 'sein', 'übel']);
       palette.forEach(c => {
-        const id = 'c_' + c; const label = document.createElement('label'); label.style.display = 'flex'; label.style.alignItems = 'center'; label.style.gap = '6px'; label.style.cursor = 'pointer';
-        label.innerHTML = `<input type=\"radio\" name=\"color\" value=\"${c}\" id=\"${id}\" style=\"accent-color:${colorHexMap[c]}\" ${(currentSelf.color === c) ? 'checked' : ''}> <img src="${spriteImg(c)}" style="width:18px;height:18px;object-fit:contain;image-rendering:crisp-edges;"> <span style=\"color:${colorHexMap[c]};font-weight:600\">${c}</span>`;
+  const id = 'c_' + c; const label = document.createElement('label'); label.className = 'char-choice';
+  label.innerHTML = `<input type=\"radio\" name=\"color\" value=\"${c}\" id=\"${id}\" style=\"accent-color:${colorHexMap[c]}\" ${(currentSelf.color === c) ? 'checked' : ''}> <img src="${spriteImg(c)}" style="width:18px;height:18px;object-fit:contain;image-rendering:crisp-edges;"> <span style=\"color:${colorHexMap[c]};font-weight:600\">${c}</span>`;
         form.appendChild(label);
       });
       // Initialize name input with current display name
@@ -1303,11 +1049,11 @@
         }
       });
   const actions = document.createElement('div');
-  actions.style.cssText = 'grid-column:1 / span 2;display:flex;align-items:center;gap:10px;margin-top:12px;';
+  actions.className = 'actions-row';
   actions.appendChild(nameInput);
-  const btnWrap = document.createElement('div'); btnWrap.style.cssText='display:flex;gap:10px;';
-  const cancel = document.createElement('button'); cancel.type = 'button'; cancel.textContent = 'Cancel'; cancel.style.cssText = 'all:unset;background:#25313b;padding:6px 12px;border-radius:6px;cursor:pointer;'; cancel.onmouseenter = () => cancel.style.background = '#2d3a45'; cancel.onmouseleave = () => cancel.style.background = '#25313b';
-  const save = document.createElement('button'); save.type = 'submit'; save.textContent = 'Save'; save.style.cssText = 'all:unset;background:#2e78d2;padding:6px 14px;border-radius:6px;cursor:pointer;font-weight:600;'; save.onmouseenter = () => save.style.background = '#2463ad'; save.onmouseleave = () => save.style.background = '#2e78d2';
+  const btnWrap = document.createElement('div'); btnWrap.className='btn-row';
+  const cancel = document.createElement('button'); cancel.type = 'button'; cancel.textContent = 'Cancel'; cancel.className = 'btn btn-outline';
+  const save = document.createElement('button'); save.type = 'submit'; save.textContent = 'Save'; save.className = 'btn btn-primary';
   btnWrap.appendChild(cancel); btnWrap.appendChild(save); actions.appendChild(btnWrap);
   form.appendChild(actions); box.appendChild(form); wrap.appendChild(box); document.body.appendChild(wrap);
       cancel.onclick = () => { console.log('[rename-popup] cancel'); wrap.remove(); };
@@ -1324,21 +1070,21 @@
     try { ws.send(JSON.stringify(payload)); } catch {}
   }
     function schedulePing() { lastPingSent = Date.now(); if (ws.readyState === 1) { ws.send(JSON.stringify({ type: 'ping' })); } }
-    function schedulePing() { lastPingSent = Date.now(); if (ws.readyState === 1) { ws.send(JSON.stringify({ type: 'ping' })); } }
     function pingLoop(){
       if (!ws) return;
       if (ws.readyState === 1) schedulePing();
-      setTimeout(pingLoop, 5000);
+  setTimeout(pingLoop, (WP_CLIENT_CONFIG?.network?.pingIntervalMs)||5000);
     }
   function wsMessage(ev){ try { const msg = JSON.parse(ev.data); if (msg.type === 'state') { log('state', msg.data); applyState(msg.data); } else if (msg.type === 'toast') { if (msg.text === 'Pause requested' && !isAdmin) { /* suppress viewer toast */ } else { showToast(msg.text || ''); } } else if (msg.type === 'pong') { const now = Date.now(); if (lastPingSent) { const rtt = now - lastPingSent; latencyMs = Math.max(0, Math.round(rtt / 2)); log('pong rtt', rtt, 'lat', latencyMs); } } else if (msg.type === 'presence') { setUsers(msg.users); } else if (msg.type === 'chat-history') { msg.items.forEach(it => { if (it.type === 'chat') { appendChat(it); pushFloatingChat(it); } else if (it.type === 'system') appendSystem(it); }); } else if (msg.type === 'chat') { appendChat(msg); pushFloatingChat(msg); } else if (msg.type === 'system') { appendSystem(msg); } else if (msg.type === 'self') { appendSelfNotice(msg.id, msg.name, msg.color); currentSelf = msg; refreshNameButton(); } else if (msg.type === 'rename-result') { console.log('[rename-result]', msg); if (msg.ok) { showToast('Name updated'); } else { if (msg.reason === 'in-use') showToast('Color in use'); else if (msg.reason === 'unchanged') showToast('No change'); else showToast('Rename failed'); } } } catch (e) { log('bad msg', e); } }
     // Admin-originated events
     // Admin-originated playback events propagate currentTime via payload.t set inside send()
-    video.addEventListener('play', () => { if (!suppress) send('play'); });
-    video.addEventListener('pause', () => { if (!suppress) send('pause'); });
+  // Always broadcast play/pause for admin; suppression only applies to seek noise
+  video.addEventListener('play', () => { if (isAdmin) { telemetry('media.play.broadcast'); send('play'); } });
+  video.addEventListener('pause', () => { if (isAdmin) { telemetry('media.pause.broadcast'); send('pause'); } });
     let lastSeekSent = 0; video.addEventListener('seeked', () => {
       if (suppress || !isAdmin) return;
       const now = Date.now();
-      if (now - lastSeekSent > 150) { send('seek'); lastSeekSent = now; }
+      if (now - lastSeekSent > 150) { send('seek', { paused: video.paused }); lastSeekSent = now; }
     });
     // Removed periodic drift reapply & admin tick (sync only on admin actions & join)
     if(!isAdmin){
@@ -1347,12 +1093,14 @@
         if(!lastState || lastState.paused) return;
         if(!video || !video.duration) return;
         const now = Date.now();
+      // Suppress drift alert shortly after an admin seek so viewer can resync
+      if(window.__lastSeekTs && (now - window.__lastSeekTs) < ((WP_CLIENT_CONFIG?.drift?.seekSuppressMs)||4000)) return;
         let target = lastState.t;
         if(!lastState.paused){
           let delta = (now - lastState.ts - latencyMs)/1000; if(delta<0) delta=0; target += delta;
         }
         const drift = video.currentTime - target;
-        if(Math.abs(drift) > 30 && lastState.rev!=null){
+        if(Math.abs(drift) > (WP_CLIENT_CONFIG?.drift?.alertThresholdSec||30) && lastState.rev!=null){
           if(window.__lastDriftAlertRev !== lastState.rev){
             window.__lastDriftAlertRev = lastState.rev;
             try { ws && ws.readyState===1 && ws.send(JSON.stringify({ type:'drift-alert', drift })); } catch{}
@@ -1360,7 +1108,7 @@
         }
   // Also periodically report current position for admin status panel accuracy
   try { ws && ws.readyState===1 && ws.send(JSON.stringify({ type:'pos', t: video.currentTime })); } catch{}
-      }, 5000);
+  }, (WP_CLIENT_CONFIG?.drift?.checkIntervalMs)||5000);
     }
     // Extra logging around play/pause events
     video.addEventListener('timeupdate', () => { if (isAdmin && !video.paused && ws.readyState === 1) {/* light */ } });
@@ -1390,7 +1138,7 @@
     // Admin lightweight CC selector (even outside VERBOSE for parity)
     // Admin relies on native subtitles: when admin enables CC via browser's track UI (if exposed)
     // Toast utility
-    function showToast(text) { if (!text) return; const t = document.createElement('div'); t.textContent = text; t.style.cssText = 'position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);background:rgba(0,0,0,.75);color:#fff;padding:10px 16px;font:14px system-ui;border-radius:8px;z-index:40;opacity:0;transition:opacity .2s'; document.body.appendChild(t); requestAnimationFrame(() => t.style.opacity = '1'); setTimeout(() => { t.style.opacity = '0'; setTimeout(() => t.remove(), 400); }, 2200); }
+  function showToast(text) { if (!text) return; const t = document.createElement('div'); t.textContent = text; t.className = 'toast'; document.body.appendChild(t); requestAnimationFrame(() => t.style.opacity = '1'); const toastDur = (WP_CLIENT_CONFIG?.toast?.durationMs)||2200; const toastFade = (WP_CLIENT_CONFIG?.toast?.fadeMs)||400; setTimeout(() => { t.style.opacity = '0'; setTimeout(() => t.remove(), toastFade); }, toastDur); }
 
     // Floating chat overlay message push
     function pushFloatingChat(msg) {
@@ -1402,7 +1150,7 @@
       div.dataset.color = msg.color || '';
       // Tighter shadow, left-justified; slight padding for consistent start edge
       // Bigger font & thicker tight outline (multi-direction 1px offsets without large blur)
-      div.style.cssText = 'background:transparent;color:' + hex + ';font-weight:600;font-size:16px;line-height:1.2;text-shadow:0 0 1px #000,0 0 2px #000,1px 0 1px #000,-1px 0 1px #000,0 1px 1px #000,0 -1px 1px #000;display:flex;align-items:center;gap:4px;opacity:0;transition:opacity .5s;padding:1px 6px 1px 4px;justify-content:flex-start;';
+  div.className = 'float-line'; div.style.color = hex;
       let avatarHtml;
       if (msg.color) {
         avatarHtml = haveHex ? `<span class="chat-avatar" style="position:static;width:20px;height:20px;margin:0;background:#14181c;overflow:hidden;border-radius:4px;display:inline-flex;align-items:center;justify-content:center;"><img src="${spriteImg(msg.color)}" alt="${esc(msg.color)}" style="max-width:100%;max-height:100%;object-fit:contain;image-rendering:crisp-edges;"></span>` : `<span class="icon" style="color:${hex};font-size:10px;">●</span>`;
@@ -1413,8 +1161,8 @@
       floatChat.appendChild(div);
       requestAnimationFrame(() => { div.style.opacity = '1'; });
       // Limit count
-      const MAX_FLOAT = 12; while (floatChat.children.length > MAX_FLOAT) { floatChat.firstChild.remove(); }
-      const LIFETIME = 9000, FADE = 1500; setTimeout(() => { div.style.opacity = '0'; }, LIFETIME - FADE); setTimeout(() => { try { div.remove(); } catch { } }, LIFETIME);
+      const MAX_FLOAT = (WP_CLIENT_CONFIG?.chat?.floating?.maxMessages)||12; while (floatChat.children.length > MAX_FLOAT) { floatChat.firstChild.remove(); }
+  const LIFETIME = (WP_CLIENT_CONFIG?.chat?.floating?.lifetimeMs)||9000, FADE = (WP_CLIENT_CONFIG?.chat?.floating?.fadeMs)||1500; setTimeout(() => { div.style.opacity = '0'; }, LIFETIME - FADE); setTimeout(() => { try { div.remove(); } catch { } }, LIFETIME);
     }
     function applyColorMapToFloating() {
       document.querySelectorAll('#floatChat > div').forEach(div => {
@@ -1443,3 +1191,24 @@
 </body>
 
 </html>
+<!-- Telemetry: global error hooks -->
+<script>
+  (function(){
+    function safeTelemetry(ev,data){ try { if(window.telemetry) window.telemetry(ev,data); } catch{} }
+    window.addEventListener('error', function(e){
+      safeTelemetry('error.window',{ msg: e.message, src: e.filename, line: e.lineno, col: e.colno, stack: (e.error && e.error.stack)||null });
+    });
+    window.addEventListener('unhandledrejection', function(e){
+      let info={};
+      try {
+        if(e.reason){
+          if(typeof e.reason==='string') info.msg=e.reason;
+          else if(e.reason && e.reason.message) info.msg=e.reason.message;
+          if(e.reason && e.reason.stack) info.stack=e.reason.stack;
+          if(e.reason && e.reason.name) info.name=e.reason.name;
+        }
+      } catch{}
+      safeTelemetry('error.unhandledrejection', info);
+    });
+  })();
+</script>

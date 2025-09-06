@@ -8,11 +8,6 @@
 - **Progressive playback**: page becomes visible once the first chunk is available (no full file pre-load).
 - Zero external SaaS (besides free Cloudflare Tunnel).
 
-## Non-Goals
-- No chat/SFU/transcoding.
-- No DRM. Private party only.
-- No user accounts; just a simple admin secret.
-
 ---
 
 ## High-Level Architecture

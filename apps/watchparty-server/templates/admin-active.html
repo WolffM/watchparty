@@ -1,0 +1,16 @@
+<!doctype html><html><head><meta charset=utf-8><title>Admin Already Active</title><style>
+body{font-family:system-ui,Segoe UI,Roboto,sans-serif;background:#0b0f14;color:#e6e6e6;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0}
+.box{background:#121a21;padding:36px 42px;border-radius:18px;max-width:560px;line-height:1.45;box-shadow:0 6px 34px -8px rgba(0,0,0,.65);border:1px solid #1d2a33}
+h1{margin:0 0 12px;font:600 22px system-ui;letter-spacing:.4px}
+p{margin:0 0 14px;font:14px/1.55 system-ui}
+code{background:#1c2630;padding:2px 6px;border-radius:6px;font:13px ui-monospace,monospace}
+.hint{font-size:12px;opacity:.7;margin-top:10px}
+button{all:unset;background:#2e78d2;color:#fff;padding:10px 16px;border-radius:10px;cursor:pointer;font:600 13px system-ui;letter-spacing:.3px}
+button:hover{background:#296bc0}
+</style></head><body><div class=box>
+<h1>Admin Session Active</h1>
+<p>An admin client is already connected with this access key. Only one admin session is allowed at a time to remain authoritative.</p>
+<p>If the previous admin tab was closed or crashed, wait up to <strong>{{TIMEOUT_S}}s</strong> for it to time out, then refresh this page.</p>
+<p class=hint>Status Code: 409 (conflict)</p>
+<button onclick="location.reload()">Retry</button>
+</div></body></html>
