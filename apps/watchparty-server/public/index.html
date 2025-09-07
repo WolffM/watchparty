@@ -54,6 +54,8 @@
     video.muted = true; // runtime mute
     video.defaultMuted = true; // remember default
     try { video.setAttribute('muted',''); } catch {}
+    // Add autoplay attribute to strengthen autoplay heuristics (some engines more lenient with both muted+autoplay present)
+    try { video.setAttribute('autoplay',''); } catch {}
   }
   // Viewer & admin share same default audio behavior (no forced mute/unmute).
     const ccOverlay = document.getElementById('ccOverlay');
@@ -68,7 +70,25 @@
     function clearOverlay() { ccOverlay.innerHTML = ''; }
     function renderActiveCues() { if (!subTrackEl || !subTrackEl.track || !subsEnabled) { clearOverlay(); return; } const cues = [...(subTrackEl.track.activeCues || [])]; if (!cues.length) { clearOverlay(); return; } ccOverlay.innerHTML = cues.map(c => `<div class='cc-bubble'>${(c.text || '').replace(/\n/g, '<br/>')}</div>`).join('<br/>'); layoutSubs(); }
     async function fetchSubsList() { try { const r = await fetch('/media/current-subs.json'); if (!r.ok) return []; const j = await r.json(); return j.tracks || []; } catch { return []; } }
-  async function ensureSubTrack(specLang) { if (subTrackEl && specLang && specLang !== currentLang) { try { subTrackEl.remove(); } catch { } subTrackEl = null; } if (subTrackEl) return true; if (!availableSubs.length) { availableSubs = await fetchSubsList(); } if (!availableSubs.length) return false; let choose = null; if (specLang) choose = availableSubs.find(t => t.lang === specLang); if (!choose) choose = availableSubs.find(t => /^eng|en$/i.test(t.lang)) || availableSubs[0]; currentLang = choose.lang; const qp = new URLSearchParams(); qp.set('rev', (lastState?.rev || 0)); qp.set('t', Date.now()); qp.set('lang', currentLang); const head = await fetch('/media/current.vtt?' + qp.toString(), { method: 'HEAD' }); if (!head.ok) return false; subTrackEl = document.createElement('track'); subTrackEl.kind = 'metadata'; subTrackEl.label = choose.label || choose.lang; subTrackEl.srclang = currentLang; subTrackEl.src = '/media/current.vtt?' + qp.toString(); try { if (subTrackEl.track) subTrackEl.track.mode = 'hidden'; } catch {} video.appendChild(subTrackEl); setTimeout(() => { if (subTrackEl && subTrackEl.track) { try { subTrackEl.track.mode = 'hidden'; } catch {} subTrackEl.track.addEventListener('cuechange', () => { renderActiveCues(); }); renderActiveCues(); } }, 180); return true; }
+    let subHeadInFlight = null;
+    async function ensureSubTrack(specLang) {
+      if (subTrackEl && specLang && specLang !== currentLang) { try { subTrackEl.remove(); } catch { } subTrackEl = null; }
+      if (subTrackEl) return true;
+      if (!availableSubs.length) { availableSubs = await fetchSubsList(); }
+      if (!availableSubs.length) return false;
+      let choose = null; if (specLang) choose = availableSubs.find(t => t.lang === specLang); if (!choose) choose = availableSubs.find(t => /^eng|en$/i.test(t.lang)) || availableSubs[0];
+      currentLang = choose.lang;
+      const qp = new URLSearchParams(); qp.set('rev', (lastState?.rev || 0)); qp.set('t', Date.now()); qp.set('lang', currentLang);
+      // De-duplicate HEAD request so multiple concurrent enable attempts don't spam network.
+      if(!subHeadInFlight){ subHeadInFlight = fetch('/media/current.vtt?' + qp.toString(), { method: 'HEAD' }); }
+      let head; try { head = await subHeadInFlight; } finally { subHeadInFlight = null; }
+      if (!head || !head.ok) return false;
+      subTrackEl = document.createElement('track'); subTrackEl.kind = 'metadata'; subTrackEl.label = choose.label || choose.lang; subTrackEl.srclang = currentLang; subTrackEl.src = '/media/current.vtt?' + qp.toString();
+      try { if (subTrackEl.track) subTrackEl.track.mode = 'hidden'; } catch {}
+      video.appendChild(subTrackEl);
+      setTimeout(() => { if (subTrackEl && subTrackEl.track) { try { subTrackEl.track.mode = 'hidden'; } catch {} subTrackEl.track.addEventListener('cuechange', () => { renderActiveCues(); }); renderActiveCues(); } }, 180);
+      return true;
+    }
     function refreshSubs() { if (subTrackEl) { try { subTrackEl.remove(); } catch { } } subTrackEl = null; subsEnabled = false; currentLang = null; availableSubs = []; clearOverlay(); }
     function layoutSubs() { // anchor & scale (fullscreen larger)
       ccOverlay.style.display = subsEnabled ? 'block' : 'none';
@@ -299,19 +319,67 @@
           inner.appendChild(status);
           function shortName(rel) { return rel.split(/[\\/]/).pop(); }
           function highlightCurrent(el, rel) { if (lastState && lastState.path === rel) { el.style.background = '#2e78d2'; el.style.color = '#fff'; } }
-          function render(list) {
-            inner.innerHTML = ''; inner.appendChild(search); if (!list.length) { const empty = document.createElement('div'); empty.textContent = '(no media files)'; empty.className = 'empty-label'; inner.appendChild(empty); return; }
-            list.forEach(rel => {
-              const row = document.createElement('div'); row.className = 'picker-row'; row.tabIndex = 0; row.innerHTML = '<span class="flex-grow truncate">' + rel.replace(/</g, '&lt;') + '</span><span class="muted fs-11">' + shortName(rel) + '</span>';
-              highlightCurrent(row, rel);
-              row.onmouseenter = () => { if (!(lastState && lastState.path === rel)) row.style.background = '#25313b'; };
-              row.onmouseleave = () => { if (!(lastState && lastState.path === rel)) row.style.background = '#1a232b'; };
-              row.onclick = () => { if (lastState && lastState.path === rel) { wrap.remove(); return; } send('load', { path: rel }); wrap.remove(); showToast('Loading ' + shortName(rel)); };
-              row.onkeydown = e => { if (e.key === 'Enter') { row.click(); } };
-              inner.appendChild(row);
-            });
+          function baseEpisodeName(rel){
+            // Derive human episode label from final component (file or manifest dir)
+            const parts = rel.split(/\//);
+            let last = parts[parts.length-1];
+            if (last === 'manifest.json' && /\.wp\.chunks\/manifest\.json$/i.test(rel)) {
+              // parent dir minus suffix
+              const parent = parts[parts.length-2] || '';
+              last = parent.replace(/\.wp\.chunks$/,'');
+            } else {
+              last = last.replace(/\.(wp\.mp4|webm)$/i,'');
+            }
+            return last;
           }
-          fetch('/api/files').then(r => r.json()).then(list => { if (!Array.isArray(list)) list = []; let files = list; render(files); search.oninput = () => { const t = search.value.toLowerCase().trim(); if (!t) { render(files); return; } const f = files.filter(x => x.toLowerCase().includes(t)); render(f); }; search.focus(); }).catch(() => { status.textContent = 'Failed to load file list.'; });
+          function renderGrouped(list, activeTop){
+            inner.innerHTML='';
+            inner.appendChild(search);
+            // Top-level pills (first segment)
+            const topWrap = document.createElement('div'); topWrap.className='top-pill-row';
+            // Fallback inline style if class not defined in current CSS
+            topWrap.style.display='flex'; topWrap.style.flexWrap='wrap'; topWrap.style.gap='6px'; topWrap.style.margin='6px 0 4px';
+            const firstSegments = Array.from(new Set(list.map(p=> p.split('/')[0] || ''))).sort();
+            function pill(label){
+              const b=document.createElement('button'); b.type='button'; b.className='btn-chip'; b.textContent=label||'(root)';
+              if(activeTop===label){ b.style.background='#2e78d2'; b.style.color='#fff'; }
+              b.onclick=()=>{ activeTop = (activeTop===label)? null: label; renderGrouped(list, activeTop); };
+              topWrap.appendChild(b);
+            }
+            // Only show pills if more than one top-level segment
+            if(firstSegments.length>1){ firstSegments.forEach(seg=> pill(seg)); inner.appendChild(topWrap); }
+            let working = list.slice();
+            if(activeTop){ working = working.filter(p=> (p.split('/')[0]||'')===activeTop); }
+            const filterTxt = search.value.toLowerCase().trim();
+            if(filterTxt){ working = working.filter(p=> baseEpisodeName(p).toLowerCase().includes(filterTxt)); }
+            if(!working.length){ const empty=document.createElement('div'); empty.textContent='(no media files)'; empty.className='empty-label'; inner.appendChild(empty); return; }
+            // Group by second segment (show)
+            const byShow = new Map();
+            for(const rel of working){
+              const segs = rel.split('/');
+              const show = segs[1] || '(misc)';
+              if(!byShow.has(show)) byShow.set(show, []);
+              byShow.get(show).push(rel);
+            }
+            const showKeys = Array.from(byShow.keys()).sort();
+            for(const show of showKeys){
+              const header = document.createElement('div'); header.className='picker-section-header'; header.textContent=show; inner.appendChild(header);
+              const eps = byShow.get(show);
+              eps.sort((a,b)=> a.localeCompare(b, undefined, {numeric:true}));
+              for(const rel of eps){
+                const row = document.createElement('div'); row.className='picker-row'; row.tabIndex=0;
+                const epName = baseEpisodeName(rel);
+                row.innerHTML = '<span class="flex-grow truncate">' + epName.replace(/</g,'&lt;') + '</span><span class="muted fs-11">' + shortName(rel) + '</span>';
+                highlightCurrent(row, rel);
+                row.onmouseenter = () => { if (!(lastState && lastState.path === rel)) row.style.background = '#25313b'; };
+                row.onmouseleave = () => { if (!(lastState && lastState.path === rel)) row.style.background = '#1a232b'; };
+                row.onclick = () => { if (lastState && lastState.path === rel) { wrap.remove(); return; } send('load', { path: rel }); wrap.remove(); showToast('Loading ' + epName); };
+                row.onkeydown = e => { if(e.key==='Enter'){ row.click(); } };
+                inner.appendChild(row);
+              }
+            }
+          }
+          fetch('/api/files').then(r => r.json()).then(list => { if(!Array.isArray(list)) list=[]; const files=list; renderGrouped(files, null); search.oninput = () => { renderGrouped(files, null); }; search.focus(); }).catch(() => { status.textContent='Failed to load file list.'; });
           box.appendChild(search); box.appendChild(inner); wrap.appendChild(box); document.body.appendChild(wrap);
           box.querySelector('#mpClose').onclick = () => wrap.remove();
           const homeBtn = box.querySelector('#mpHome');
@@ -339,12 +407,15 @@
           autoSubsAttempted=true; return true;
         } catch { return false; }
       };
+  let autoSubsScheduled = false;
   function scheduleAutoSubs(retries=(WP_CLIENT_CONFIG?.subtitles?.autoEnableRetriesInitial||5)){
-        if(subsEnabled || autoSubsAttempted) return;
+        if(subsEnabled || autoSubsAttempted || autoSubsScheduled) return;
+        autoSubsScheduled = true; // guard race with metadata + initial call
         setTimeout(async ()=>{
-          if(subsEnabled) return;
+          if(subsEnabled){ autoSubsAttempted=true; autoSubsScheduled=false; return; }
           const ok = await window.enableDefaultSubs('eng');
-          if(!ok && retries>0) scheduleAutoSubs(retries-1);
+          if(!ok && retries>0){ autoSubsScheduled=false; scheduleAutoSubs(retries-1); }
+          else { autoSubsScheduled=false; }
   }, (WP_CLIENT_CONFIG?.subtitles?.autoEnableDelayMs)||300);
       }
   // Expose for outside callers (e.g., metadata listener)
@@ -576,8 +647,10 @@
   function ensureDevPanel(){ if(devPanel) return; devPanel=document.createElement('div'); devPanel.id='devPanel'; devPanel.className='dev-panel'; devPanel.innerHTML='<div class="dev-header">Connections <span id="devRefresh" class="dev-refresh">⟳</span></div><div id="devBody" class="dev-rows"></div>'; videoWrap.appendChild(devPanel); devPanel.querySelector('#devRefresh').onclick=fetchStatus; }
   // Telemetry helpers
   function telemetry(ev, data){ try { if(ws && ws.readyState===1){ ws.send(JSON.stringify({type:'telemetry', ev, data, ts:Date.now()})); } } catch(e){} }
+  // Expose globally for later scripts outside this closure referencing telemetry()
+  try { window.telemetry = telemetry; } catch {}
   function telemetricClick(el, evName, extra){ if(!el) return; el.addEventListener('click', (e)=> telemetry(evName, typeof extra==='function'? extra(e): extra)); }
-  async function fetchStatus(){ if(!devVisible) return; try { const r=await fetch('/api/debug/clients?_=' + Date.now()); if(!r.ok) return; const j=await r.json(); const body=devPanel.querySelector('#devBody'); body.innerHTML=''; (j.clients||[]).forEach(c=>{ const driftStr = (c.drift==null)?'--': ( (c.drift>0?'+':'') + c.drift.toFixed(2)+'s'); const downKBs = c.downBps!=null? (c.downBps/1024).toFixed(1)+'kB/s':'--'; const upKBs = c.upBps!=null? (c.upBps/1024).toFixed(1)+'kB/s':'--'; const totalIn = c.bytesIn!=null? (c.bytesIn/1024).toFixed(0)+'kB':'--'; const totalOut = c.bytesOut!=null? (c.bytesOut/1024).toFixed(0)+'kB':'--'; const row=document.createElement('div'); row.className='dev-row'; const driftWarn = (c.drift&&Math.abs(c.drift)>5); row.innerHTML=`<span class="id-col">${c.id}</span><span class="name-col" style="color:${CHAR_COLOR_HEX[c.color]||'#ccc'}">${c.name||c.color||'anon'}</span><span class="color-col">${c.color||''}</span><span class="connected-col">${formatMs(c.connectedMs||0)}</span><span class="drift-col ${driftWarn?'drift-warn':''}">${driftStr}</span><span class="kb-col">${downKBs}</span><span class="kb-col">${upKBs}</span><span class="total-col">${totalIn}</span><span class="total-col">${totalOut}</span>`; body.appendChild(row); }); } catch(e){ console.warn('dev fetch fail',e); } }
+  async function fetchStatus(){ if(!devVisible) return; try { const r=await fetch('/api/debug/clients?_=' + Date.now()); if(!r.ok) return; const j=await r.json(); const body=devPanel.querySelector('#devBody'); body.innerHTML=''; const serverNow = j.serverNow||Date.now(); const mediaNow = j.mediaNow; const mediaPaused = j.mediaPaused; const mediaTotalBytes = j.mediaTotalBytes||0; const header=document.createElement('div'); header.className='dev-row header'; header.innerHTML='<span class="id-col">ID</span><span class="name-col">User</span><span class="dur-col">Up</span><span class="drift-col">Drift</span><span class="rate-col" title="Avg / Recent down (kB/s)">Down</span><span class="in-col" title="Inbound ws (kB)">In</span><span class="out-col" title="Outbound ws / media / combined (kB)">Out</span><span class="pct-col" title="% file fetched">%</span>'; body.appendChild(header); (j.clients||[]).forEach(c=>{ let driftStr='--'; if(c.drift!=null){ const ageMs = c.driftAgeMs!=null? c.driftAgeMs : (serverNow - (c.lastPos && c.lastPos.ts || serverNow)); const stale = ageMs > 2000; driftStr = (c.drift>0?'+':'') + c.drift.toFixed(2)+'s' + (stale?'~':''); } else if(c.lastPos && mediaNow!=null){ const ageSec=(serverNow-(c.lastPos.ts||serverNow))/1000; const expectedAtSample = mediaPaused? mediaNow : (mediaNow - ageSec); const d=c.lastPos.t-expectedAtSample; driftStr=(d>0?'+':'')+d.toFixed(2)+'s'; } const downKBs = c.downBps!=null? (c.downBps/1024).toFixed(1)+'kB/s':'--'; const rDownKBs = c.rDownBps!=null? (c.rDownBps/1024).toFixed(1)+'kB/s':'--'; const totalInKB = c.bytesIn!=null? (c.bytesIn/1024).toFixed(0):'--'; const wsOutKB = c.bytesOut!=null? (c.bytesOut/1024).toFixed(0):'--'; const mediaKB = c.mediaBytes!=null? (c.mediaBytes/1024).toFixed(0):'--'; const combinedKB = ((c.bytesOut||0)+(c.mediaBytes||0))/1024; const combinedStr = isFinite(combinedKB)? combinedKB.toFixed(0):'--'; const pct = (mediaTotalBytes && c.mediaBytes!=null)? Math.min(100,(c.mediaBytes/mediaTotalBytes)*100).toFixed(1):'--'; const row=document.createElement('div'); row.className='dev-row'; const driftWarn=(driftStr!=='--' && /[-+]?\d/.test(driftStr) && Math.abs(parseFloat(driftStr))>5); row.innerHTML=`<span class="id-col">${c.id}</span><span class="name-col" style="color:${CHAR_COLOR_HEX[c.color]||'#ccc'}" title="${c.color||''}">${c.name||c.color||'anon'}</span><span class="dur-col">${formatMs(c.connectedMs||0)}</span><span class="drift-col ${driftWarn?'drift-warn':''}" title="age ${(c.driftAgeMs||0)}ms">${driftStr}</span><span class="rate-col" title="avg / recent">${downKBs}\n${rDownKBs}</span><span class="in-col">${totalInKB}</span><span class="out-col">${wsOutKB} / ${mediaKB} / ${combinedStr}</span><span class="pct-col">${pct}</span>`; body.appendChild(row); }); } catch(e){ console.warn('dev fetch fail',e); } }
   function toggleDev(){
     if(!isAdmin) return;
     ensureDevPanel();
@@ -586,7 +659,7 @@
     if(devVisible){
       fetchStatus();
       if(devTimer) clearInterval(devTimer);
-  devTimer=setInterval(fetchStatus,(WP_CLIENT_CONFIG?.dev?.refreshIntervalMs)||4000);
+  devTimer=setInterval(fetchStatus,1000); // tighten to 1s when panel visible
     } else {
       if(devTimer){ clearInterval(devTimer); devTimer=null; }
     }
@@ -764,13 +837,28 @@
   function bufferRanges() { const arr = []; try { for (let i=0;i<video.buffered.length;i++){ arr.push([video.buffered.start(i).toFixed(2), video.buffered.end(i).toFixed(2)]); } } catch {} return arr; }
   function sampleTelemetry(){ if(isAdmin) return; const ct=video.currentTime; const d=ct - telem.lastCT; if(!video.paused && d < 0.05) telem.stagnation++; else telem.stagnation=0; const stalled = (!video.paused && telem.stagnation>=3 && video.readyState>=3); console.log('[telem]', {ct:ct.toFixed(2), d:d.toFixed(2), paused:video.paused, muted:video.muted, rs:video.readyState, ns:video.networkState, buf:bufferRanges(), playOK:telem.playSuccess, playErr:telem.playErrors, notAllowed:telem.notAllowed, seekAdj:telem.seekAdjusts, enforcedPauses:telem.enforcedPauses, stalled}); telem.lastCT=ct; }
   setInterval(sampleTelemetry, (WP_CLIENT_CONFIG?.telemetry?.sampleIntervalMs)||1000);
+  // Robust autoplay helper with retry window (guards rare cases play() silently does nothing)
+  let autoPlayRetries = 0;
+  let autoPlayTimer = null;
+  function clearAutoPlayTimer(){ if(autoPlayTimer){ clearInterval(autoPlayTimer); autoPlayTimer=null; } }
   function ensureViewerPlaying(){
     if(isAdmin) return;
-    if(!lastState || lastState.paused) return;
+    if(!lastState || lastState.paused) { clearAutoPlayTimer(); return; }
     if(!video.src) return;
-    if(!video.paused) return;
+    if(!video.paused) { clearAutoPlayTimer(); return; }
+    const attempt = ++autoPlayRetries;
+    telemetry && telemetry('viewer.autoplay.attempt',{attempt});
     const p = video.play();
-    if(p && p.catch){ p.catch(e=>{ telem.playErrors++; if(e && e.name==='NotAllowedError') telem.notAllowed++; }); }
+    if(p && p.then){ p.then(()=>{ if(!video.paused){ telemetry && telemetry('viewer.autoplay.success',{attempt}); clearAutoPlayTimer(); } }).catch(e=>{ telem.playErrors++; if(e && e.name==='NotAllowedError') telem.notAllowed++; telemetry && telemetry('viewer.autoplay.fail',{attempt, name:e?.name, msg:e?.message}); }); }
+    // Schedule periodic re-attempts (stop when playing or exceeded cap)
+    if(!autoPlayTimer){
+      autoPlayTimer = setInterval(()=>{
+        if(isAdmin || !lastState || lastState.paused){ clearAutoPlayTimer(); return; }
+        if(!video.src || !video.paused){ clearAutoPlayTimer(); return; }
+        if(autoPlayRetries >= 6){ telemetry && telemetry('viewer.autoplay.giveup',{attempts:autoPlayRetries}); clearAutoPlayTimer(); return; }
+        ensureViewerPlaying();
+      }, 1400);
+    }
   }
   function applyState(s) {
       if (!s) return; const prev = lastState; lastState = s;
@@ -851,7 +939,58 @@
         try { updateMediaTitle(s.path); } catch { }
         if (s.path) {
           // New media selected
-          suppress = true; video.currentTime = 0; video.src = '/media/current.mp4?rev=' + s.rev; video.load(); setTimeout(() => suppress = false, 150);
+          if (isAdmin) { suppress = true; video.currentTime = 0; }
+          // Viewer mid-join optimization: pre-compute target so we seek immediately after metadata
+          if (!isAdmin) {
+            try {
+              let joinTarget = s.t;
+              if (!s.paused) {
+                let delta = (Date.now() - s.ts - latencyMs)/1000; if (delta < 0) delta = 0; joinTarget += delta;
+              }
+              if (joinTarget < 0) joinTarget = 0;
+              // Don't assign currentTime before metadata; stash as pending target
+              pendingTarget = joinTarget;
+              telemetry && telemetry('join.sync.initial',{ rev: s.rev, target: Number(joinTarget.toFixed(2)), paused: !!s.paused });
+            } catch{}
+          }
+          // Robust load helper with retry for rare initial failure (observed occasional readyState 0 + error in one tab)
+          if(!window.__videoLoadAttempts) window.__videoLoadAttempts = 0;
+          function setVideoSrc(rev){
+            window.__videoLoadAttempts++;
+            const attempt = window.__videoLoadAttempts;
+            const cacheBust = 'r'+attempt+'='+Date.now();
+            const guidParam = (currentSelf && currentSelf.guid) ? ('&guid='+encodeURIComponent(currentSelf.guid)) : '';
+            const url = '/media/current.mp4?rev=' + rev + '&' + cacheBust + guidParam;
+            console.log('[media] set src attempt', attempt, url);
+            telemetry && telemetry('media.load.attempt',{rev:rev, attempt});
+            try { video.src = url; video.load(); } catch(e){ console.warn('video load error (immediate)', e); }
+            scheduleRetry(rev, attempt);
+          }
+          function scheduleRetry(rev, attempt){
+            // If after delay still HAVE_NOTHING and no further attempt superseded, retry (max 3)
+            setTimeout(()=>{
+              if(video.readyState>0) return; // something loaded
+              if(window.__videoLoadAttempts!==attempt) return; // a newer attempt already started
+              if(attempt>=3) { console.warn('[media] giving up after attempts', attempt); telemetry && telemetry('media.load.giveup',{rev, attempts:attempt}); return; }
+              console.warn('[media] retrying initial video load attempt', attempt+1);
+              telemetry && telemetry('media.load.retry.timeout',{rev, attemptNext: attempt+1});
+              setVideoSrc(rev);
+            }, 1800 + (attempt*400));
+          }
+          // Attach one-time error handler for early failures (networkState NO_SOURCE)
+          if(!video.__errorRetryBound){
+            video.__errorRetryBound = true;
+            video.addEventListener('error', ()=>{
+              if(video.readyState>0) return; // already loaded something later
+              const attempt = window.__videoLoadAttempts||0;
+              if(attempt>=3) return;
+              console.warn('[media] video error before metadata, scheduling retry', attempt+1, video.error && video.error.code);
+              telemetry && telemetry('media.load.retry.error',{rev: lastRev, attemptNext: attempt+1, code: video.error && video.error.code});
+              setVideoSrc(lastRev);
+            });
+          }
+          setVideoSrc(s.rev);
+          setTimeout(() => suppress = false, 150);
           // Wipe enter only if coming from home
           if (noMediaGlobal) triggerWipeEnter();
           // Attempt to auto-enable subtitles with retries
@@ -891,11 +1030,37 @@
         console.log('[video-event]', ev, 't=', video.currentTime.toFixed(2), 'readyState', video.readyState, 'networkState', video.networkState, 'paused', video.paused, 'muted', video.muted);
       });
     });
+    // Lightweight stall detector (viewer only) – considers stagnation of currentTime while expected should advance
+    let stallActive=false; let stallStartTs=0; let stallStartCT=0; let stallStartDrift=0;
+    function currentDrift(){
+      if(!lastState) return 0;
+      let target=lastState.t; if(!lastState.paused){ let d=(Date.now()-lastState.ts-latencyMs)/1000; if(d<0)d=0; target+=d; }
+      return video.currentTime - target;
+    }
+    setInterval(()=>{
+      if(isAdmin || !lastState || lastState.paused) return;
+      const driftNow = currentDrift();
+      // If video should be playing (readyState>=2) but currentTime not moving much and buffer appears present
+      const bufAhead = (function(){ try { for(let i=0;i<video.buffered.length;i++){ const s=video.buffered.start(i), e=video.buffered.end(i); if(video.currentTime>=s && video.currentTime<=e) return e-video.currentTime; } } catch{} return 0; })();
+      const stagnating = !video.paused && video.readyState>=2 && telem.stagnation>=3; // already tracked every second
+      if(stagnating && !stallActive){
+        stallActive=true; stallStartTs=Date.now(); stallStartCT=video.currentTime; stallStartDrift=driftNow;
+        telemetry && telemetry('client-stall-start',{ ct:Number(stallStartCT.toFixed(2)), drift:Number(stallStartDrift.toFixed(2)), rs:video.readyState, ns:video.networkState, buf:bufAhead.toFixed(2) });
+      } else if(!stagnating && stallActive){
+        const durMs = Date.now()-stallStartTs; const lost = video.currentTime - stallStartCT; const driftEnd=currentDrift();
+        telemetry && telemetry('client-stall-end',{ ct:Number(video.currentTime.toFixed(2)), durMs, lostSec:Number(lost.toFixed(2)), driftStart:Number(stallStartDrift.toFixed(2)), driftEnd:Number(driftEnd.toFixed(2)), rsEnd:video.readyState, nsEnd:video.networkState, bufEnd:bufAhead.toFixed(2) });
+        stallActive=false;
+      }
+    }, 1000);
     video.addEventListener('loadedmetadata', () => {
       if (pendingTarget != null) { suppress = true; video.currentTime = pendingTarget; pendingTarget = null; setTimeout(() => suppress = false, 60); }
       if (!isAdmin && lastState && !lastState.paused) ensureViewerPlaying();
   if(!subsEnabled) scheduleAutoSubs((WP_CLIENT_CONFIG?.subtitles?.autoEnableRetriesMetadata)||3);
       telemetry('media.loadedmeta.viewer', {t: video.currentTime, dur: video.duration||0});
+      try {
+        const attempt = window.__videoLoadAttempts||1;
+        if(ws && ws.readyState===1){ ws.send(JSON.stringify({ type:'media-loaded', rev: lastRev, attempt })); }
+      } catch{}
     });
     video.addEventListener('play', ()=> telemetry('media.play.auto'));
     video.addEventListener('pause', ()=> telemetry('media.pause.auto'));

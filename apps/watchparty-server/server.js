@@ -46,6 +46,9 @@ let colorsAvailable = [...COLOR_PALETTE];
 const clientMeta = new Map(); // socket -> { id, color, customName, lastSeen, msgTimes: number[], isAdmin, bytesIn, bytesOut, msgsIn, msgsOut, lastRecvTs, lastSentTs, connectAt, lastPos }
 let nextClientId = 1;
 const processStartTs = Date.now();
+// Track per-media revision first file request & receive confirmations to avoid log spam
+const fileRequestLogged = new Set(); // keys: guid|rev
+const fileReceivedLogged = new Set(); // keys: guid|rev
 function genGuid(){ return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g,c=>{ const r=Math.random()*16|0, v=c==='x'?r:(r&0x3|0x8); return v.toString(16); }); }
 const chatHistory = []; // ring buffer of { type:'chat', id,name,color,text,ts }
 const CHAT_HISTORY_LIMIT = config.chat.historyLimit;
@@ -117,7 +120,7 @@ wss.on('connection', (socket, req) => {
   const auth = validateAccess({ suppliedKey: supplied, requestPath: req.url, adminKey: ADMIN_KEY });
   if (!auth.ok){ systemLog('auth','unauthorized-connection',{ path: req.url }); socket.close(1008,'unauthorized'); return; }
   if (auth.isAdmin && hasActiveAdmin()) { systemLog('auth','deny-second-admin',{}); try { socket.close(4003,'admin-already-active'); } catch {} return; }
-  const meta = { id: nextClientId++, guid: genGuid(), color: assignColor(), lastSeen: Date.now(), msgTimes: [], isAdmin: auth.isAdmin, connectAt: Date.now(), lastPos: null, bytesIn:0, bytesOut:0, msgsIn:0, msgsOut:0, lastRecvTs: Date.now(), lastSentTs: Date.now() };
+  const meta = { id: nextClientId++, guid: genGuid(), color: assignColor(), lastSeen: Date.now(), msgTimes: [], isAdmin: auth.isAdmin, connectAt: Date.now(), lastPos: null, bytesIn:0, bytesOut:0, mediaBytes:0, msgsIn:0, msgsOut:0, lastRecvTs: Date.now(), lastSentTs: Date.now() };
   clientMeta.set(socket, meta);
   // Defensive: In extremely unlikely future async refactors, re-check single-admin invariant after insertion.
   if (meta.isAdmin) {
@@ -183,6 +186,12 @@ wss.on('connection', (socket, req) => {
           try { dataObj = JSON.parse(JSON.stringify(msg.data)); } catch {}
         }
         logTelemetry(ev, meta, dataObj);
+        // Surface selected stall events into system log for immediate observability
+        if (ev === 'client-stall-start') {
+          systemLog('perf','stall-start',{ id: meta.id, guid: meta.guid, ct: dataObj?.ct, rs: dataObj?.rs, ns: dataObj?.ns, buf: dataObj?.buf, drift: dataObj?.drift, rev: mediaRev });
+        } else if (ev === 'client-stall-end') {
+          systemLog('perf','stall-end',{ id: meta.id, guid: meta.guid, ct: dataObj?.ct, durMs: dataObj?.durMs, lostSec: dataObj?.lostSec, rs: dataObj?.rsEnd, ns: dataObj?.nsEnd, buf: dataObj?.bufEnd, drift: dataObj?.driftEnd, rev: mediaRev });
+        }
         break; }
       case 'rename': {
         // Accept optional color & name; enforce uniqueness of color
@@ -219,6 +228,8 @@ wss.on('connection', (socket, req) => {
           const resolved = resolveMedia(mediaRoot, msg.path);
           if (resolved) {
             mediaFile = resolved.abs; mediaRel = resolved.rel; mediaRev++;
+            // Reset per-revision request tracking
+            fileRequestLogged.clear(); fileReceivedLogged.clear();
             lastBroadcast = { t:0, paused:true, ts: now, rev: mediaRev, path: mediaRel };
             // audio probe cache invalidation no longer needed (handled in helper)
             systemLog('media','load',{ path: mediaRel, rev: mediaRev });
@@ -235,10 +246,20 @@ wss.on('connection', (socket, req) => {
         if (mediaFile) {
           systemLog('media','unload',{ path: mediaRel, rev: mediaRev });
           mediaFile = null; mediaRel = null; mediaRev++;
+          fileRequestLogged.clear(); fileReceivedLogged.clear();
           lastBroadcast = { t:0, paused:true, ts: now, rev: mediaRev, path: mediaRel };
           // audio probe cache invalidation no longer needed (handled in helper)
           pushSystemAdmin('media unloaded (home)');
           broadcastState();
+        }
+        break; }
+      case 'media-loaded': {
+        // Client indicates it successfully loaded metadata for current media revision.
+        const rev = typeof msg.rev === 'number' ? msg.rev : mediaRev;
+        const key = meta.guid + '|' + rev;
+        if (!fileReceivedLogged.has(key)) {
+          fileReceivedLogged.add(key);
+          systemLog('media','file-received',{ guid: meta.guid, id: meta.id, rev, attempt: msg.attempt });
         }
         break; }
       case 'play': {
@@ -271,6 +292,21 @@ wss.on('connection', (socket, req) => {
         if (typeof msg.t === 'number' && msg.t >= 0) {
           meta.lastPos = { t: msg.t, ts: now };
         }
+        break; }
+      case 'status': {
+        // Rich client self-report (viewer) with current playback metrics
+        if (typeof msg.t === 'number' && msg.t >= 0) {
+          meta.lastPos = { t: msg.t, ts: now };
+        }
+        if (!meta.status) meta.status = {};
+        // Shallow copy only expected primitives to avoid trust of arbitrary objects
+        if (typeof msg.paused === 'boolean') meta.status.paused = msg.paused;
+        if (typeof msg.rev === 'number') meta.status.rev = msg.rev;
+        if (typeof msg.dur === 'number') meta.status.dur = msg.dur;
+        if (typeof msg.rs === 'number') meta.status.rs = msg.rs;
+        if (typeof msg.ns === 'number') meta.status.ns = msg.ns;
+        if (typeof msg.buf === 'number') meta.status.buf = msg.buf; // buffer ahead seconds
+        meta.status._ts = now;
         break; }
       case 'tick': {
         // Deprecated: admin no longer sends periodic ticks (kept for backward compatibility / no-op)
@@ -306,14 +342,6 @@ const presenceInterval = setInterval(()=>{
     if (idle > PRESENCE_TIMEOUT_MS) {
   systemLog('presence','timeout',{ id: meta.id, idleMs: idle });
   systemLog('presence','timeout',{ id: meta.id, guid: meta.guid, idleMs: idle });
-            systemLog('chat','global-burst',{ count: globalChatTimes.length, windowMs: CHAT_RATE_WINDOW_MS });
-  if (!isAdminMsg) { systemLog('media','deny-load-not-admin',{ id: meta.id, guid: meta.guid }); break; }
-  if (!isAdminMsg) { systemLog('media','deny-unload-not-admin',{ id: meta.id, guid: meta.guid }); break; }
-          systemLog('media','play',{ fromT: prev.t, toT: lastBroadcast.t, rev: mediaRev, adminId: meta.id, adminGuid: meta.guid });
-          systemLog('media','pause',{ fromT: prev.t, toT: lastBroadcast.t, rev: mediaRev, adminId: meta.id, adminGuid: meta.guid });
-          systemLog('media','seek',{ fromT: prev.t, toT: lastBroadcast.t, paused: lastBroadcast.paused, rev: mediaRev, adminId: meta.id, adminGuid: meta.guid });
-  systemLog('ws','client-closed',{ id: meta.id, guid: meta.guid, code, reason });
-  systemLog('error','client-error',{ id: meta.id, guid: meta.guid, msg: err?.message });
       pushSystem((meta.color? meta.color: ('anon'+meta.id)) + ' left');
       releaseColor(meta.color); clientMeta.delete(sock); try { sock.close(4000,'timeout'); } catch {}
       changed=true;
@@ -338,6 +366,11 @@ const perfInterval = setInterval(()=>{
       let delta = (now - lastBroadcast.ts)/1000; if(delta<0) delta=0; expected += delta;
       drift = meta.lastPos.t - expected;
     }
+    // One-off drift threshold logging (negative or positive) to root-cause stalls early
+    if (drift!=null) {
+      if (Math.abs(drift) > 10 && !meta._loggedDrift10) { meta._loggedDrift10 = true; systemLog('drift','client-drift-gt10',{ id: meta.id, guid: meta.guid, drift: Number(drift.toFixed(3)), rev: mediaRev }); }
+      if (Math.abs(drift) > 30 && !meta._loggedDrift30) { meta._loggedDrift30 = true; systemLog('drift','client-drift-gt30',{ id: meta.id, guid: meta.guid, drift: Number(drift.toFixed(3)), rev: mediaRev }); }
+    }
     clients.push({ id: meta.id, drift, upBps: Number(upBps.toFixed(1)), downBps: Number(downBps.toFixed(1)), msgsIn: meta.msgsIn||0, msgsOut: meta.msgsOut||0 });
   }
   systemLog('perf','snapshot',{ count: clients.length, clients });
@@ -351,18 +384,42 @@ function broadcastState(){
 // Lightweight telemetry endpoints for debugging client disconnects
 app.get('/api/debug/clients', (_req,res)=>{
   const now = Date.now();
-  const clients = [];
-  for (const [sock, meta] of clientMeta.entries()) {
-    let drift = null;
-    if (meta.lastPos && mediaFile && !lastBroadcast.paused) {
-      let expected = lastBroadcast.t;
-      let delta = (now - lastBroadcast.ts)/1000; if(delta<0) delta=0; if(!lastBroadcast.paused) expected += delta;
-      drift = meta.lastPos.t - expected;
+  let mediaNow = null;
+  if (mediaFile && lastBroadcast) {
+    mediaNow = lastBroadcast.t;
+    if (!lastBroadcast.paused) {
+      let delta = (now - lastBroadcast.ts)/1000; if (delta < 0) delta = 0; mediaNow += delta;
+    }
+  }
+  const playing = !!(mediaFile && lastBroadcast && !lastBroadcast.paused);
+  const expectedNow = mediaNow;
+  let mediaTotalBytes = null; try { if (mediaFile) mediaTotalBytes = fs.statSync(mediaFile).size; } catch {}
+  const clients=[];
+  for (const [, meta] of clientMeta.entries()) {
+    let drift=null, driftAgeMs=null;
+    if (meta.lastPos && mediaNow!=null) {
+      driftAgeMs = now - meta.lastPos.ts; if (driftAgeMs < 0) driftAgeMs = 0;
+      let expectedAtSample = expectedNow - (playing ? (driftAgeMs/1000) : 0);
+      if (expectedAtSample < 0) expectedAtSample = 0;
+      drift = meta.lastPos.t - expectedAtSample;
     }
     const connectedMs = now - meta.connectAt;
-    const sec = connectedMs > 0 ? connectedMs/1000 : 1;
-    const upBps = meta.bytesIn ? meta.bytesIn / sec : 0;   // from client -> server
-    const downBps = meta.bytesOut ? meta.bytesOut / sec : 0; // server -> client
+    const sec = connectedMs>0 ? (connectedMs/1000) : 1;
+    const combinedDown = (meta.bytesOut||0) + (meta.mediaBytes||0);
+    const upBps = meta.bytesIn ? meta.bytesIn / sec : 0;
+    const downBps = combinedDown ? combinedDown / sec : 0;
+    // recent window samples
+    if (meta._rateSampleTs == null) {
+      meta._rateSampleTs = now; meta._bytesInSample = meta.bytesIn||0; meta._bytesOutSample = meta.bytesOut||0; meta._bytesOutSampleAll = combinedDown;
+    }
+    let rWindowMs = now - meta._rateSampleTs; if (rWindowMs <= 0) rWindowMs = 1;
+    const deltaIn = (meta.bytesIn||0) - (meta._bytesInSample||0);
+    const deltaDownWs = (meta.bytesOut||0) - (meta._bytesOutSample||0);
+    const deltaDownAll = combinedDown - (meta._bytesOutSampleAll||0);
+    const rUpBps = deltaIn>0 ? deltaIn / (rWindowMs/1000) : 0;
+    const rDownBps = deltaDownAll>0 ? deltaDownAll / (rWindowMs/1000) : 0;
+    // advance window
+    meta._rateSampleTs = now; meta._bytesInSample = meta.bytesIn||0; meta._bytesOutSample = meta.bytesOut||0; meta._bytesOutSampleAll = combinedDown;
     clients.push({
       id: meta.id,
       color: meta.color,
@@ -371,15 +428,23 @@ app.get('/api/debug/clients', (_req,res)=>{
       idleMs: now - meta.lastSeen,
       connectedMs,
       drift,
+      driftAgeMs,
       bytesIn: meta.bytesIn||0,
-      bytesOut: meta.bytesOut||0,
+      bytesOut: meta.bytesOut||0, // websocket outbound only
+      mediaBytes: meta.mediaBytes||0,
       msgsIn: meta.msgsIn||0,
       msgsOut: meta.msgsOut||0,
       upBps: Number(upBps.toFixed(1)),
-      downBps: Number(downBps.toFixed(1))
+      downBps: Number(downBps.toFixed(1)), // combined ws + media
+      rUpBps: Number(rUpBps.toFixed(1)),
+      rDownBps: Number(rDownBps.toFixed(1)),
+      lastPos: meta.lastPos||null,
+      lastSentTs: meta.lastSentTs||null,
+  lastRecvTs: meta.lastRecvTs||null,
+  status: meta.status ? { ...meta.status } : null
     });
   }
-  res.json({ count: clients.length, clients });
+  res.json({ count: clients.length, clients, serverNow: now, mediaNow, mediaPaused: !!(lastBroadcast && lastBroadcast.paused), mediaRev, mediaTotalBytes });
 });
 app.get('/api/debug/state', (_req,res)=>{
   res.json({ lastBroadcast, mediaFile: mediaFile? path.relative(process.cwd(), mediaFile): null, rev: mediaRev });
@@ -441,11 +506,23 @@ app.get('/media/current.mp4', (req, res) => {
   let stat; try { stat = fs.statSync(mediaFile); } catch { res.status(404).end(); return; }
   const total = stat.size;
   const range = req.headers.range;
+  const guid = (req.query && typeof req.query.guid==='string') ? req.query.guid : null;
+  if (guid) {
+    const key = guid + '|' + mediaRev;
+    if (!fileRequestLogged.has(key)) {
+      fileRequestLogged.add(key);
+      systemLog('media','file-request',{ guid, rev: mediaRev, range: !!range });
+    }
+  }
   res.setHeader('Accept-Ranges', 'bytes');
   res.setHeader('Content-Type', mediaFile.toLowerCase().endsWith('.webm') ? 'video/webm' : 'video/mp4');
   if (!range) {
     res.setHeader('Content-Length', total);
     if (req.method === 'HEAD') return res.status(200).end();
+    // Attribute full file streaming to client (first request usually a range; this is fallback)
+    if (guid) {
+      for (const [sock, meta] of clientMeta.entries()) { if (meta.guid === guid) { meta.mediaBytes += total; break; } }
+    }
     return fs.createReadStream(mediaFile).pipe(res);
   }
   const m = /bytes=(\d*)-(\d*)/.exec(range);
@@ -456,6 +533,11 @@ app.get('/media/current.mp4', (req, res) => {
   res.setHeader('Content-Range', `bytes ${start}-${end}/${total}`);
   res.setHeader('Content-Length', end - start + 1);
   if (req.method === 'HEAD') return res.end();
+  // Attribute served range bytes to requesting client
+  if (guid) {
+    const served = (end - start + 1);
+    for (const [sock, meta] of clientMeta.entries()) { if (meta.guid === guid) { meta.mediaBytes += served; break; } }
+  }
   fs.createReadStream(mediaFile, { start, end }).pipe(res);
 });
 
@@ -494,101 +576,70 @@ app.get('/media/current-audio.json', (_req,res) => {
   try {
     const files = fs.readdirSync(dir);
     const escPrefix = prefix.replace(/[.*+?^${}()|[\]\\]/g,'\\$&');
-    const sidecarPrefixRe = new RegExp('^' + escPrefix + '\\.' + 'audio' + '\\.([a-z0-9_-]{2,8})(?:\\.[^.]+)?\\.(m4a|aac|mp4)$','i');
-    const sidecarEpisodeRe = epKey ? new RegExp('audio\\.([a-z0-9_-]{2,8})(?:\\.[^.]+)?\\.(m4a|aac|mp4)$','i') : null;
+    const sidecarPrefixRe = new RegExp('^' + escPrefix + '\.' + 'audio' + '\.([a-z0-9_-]{2,8})(?:\.[^.]+)?\\.(m4a|aac|mp4)$','i');
+    const sidecarEpisodeRe = epKey ? new RegExp('audio\\.([a-z0-9_-]{2,8})(?:\.[^.]+)?\\.(m4a|aac|mp4)$','i') : null;
     const byLang = new Map();
     for (const f of files) {
       const low = f.toLowerCase();
       if (!(low.endsWith('.m4a') || low.endsWith('.aac') || low.endsWith('.mp4'))) continue;
-      let lang=null, codecExt=null;
-      let preferred = false;
-      let m = f.match(sidecarPrefixRe);
-      if (m) { lang = m[1].toLowerCase(); codecExt = (m[2]||'aac').toLowerCase(); preferred = true; }
-      else if (epKey && low.includes(epKey) && sidecarEpisodeRe && (m = f.match(sidecarEpisodeRe))) {
-        // cross-variant: ensure episode key present AND not already matched by prefix
-        if (low.includes(epKey)) { lang = m[1].toLowerCase(); codecExt = (m[2]||'aac').toLowerCase(); }
+      let lang=null; let preferred=false; let m=f.match(sidecarPrefixRe);
+      if (m) { lang = m[1].toLowerCase(); preferred=true; }
+      else if (epKey && low.includes(epKey) && sidecarEpisodeRe && (m=f.match(sidecarEpisodeRe))) {
+        if (low.includes(epKey)) { lang = m[1].toLowerCase(); }
       }
       if (!lang) continue;
       if (byLang.has(lang)) {
-        // Keep existing if it's preferred (prefix match) and new isn't, else replace
         const existing = byLang.get(lang);
-        if (existing.preferred) continue; // don't override canonical
+        if (existing.preferred) continue;
         if (preferred || !existing.preferred) byLang.set(lang,{ file:f, preferred });
       } else byLang.set(lang,{ file:f, preferred });
     }
-    for (const [lang, info] of byLang.entries()){
-      sidecars.push({
-        logical: sidecars.length,
-        lang,
-        title: '',
-        codec: 'aac',
-        channels: null,
-        sample_rate: null,
-        default: false,
-        url: `/media/output/${encodeURIComponent(path.relative(path.join(process.cwd(),'media','output'), path.join(dir,info.file)).replace(/\\/g,'/'))}`,
-        kind: 'sidecar',
-        preferred: info.preferred
-      });
+    for (const [lang, info] of byLang.entries()) {
+      sidecars.push({ logical: sidecars.length, lang, title:'', sample_rate:null, default:false, url:`/media/output/${encodeURIComponent(path.relative(path.join(process.cwd(),'media','output'), path.join(dir,info.file)).replace(/\\/g,'/'))}`, kind:'sidecar', preferred: info.preferred });
     }
   } catch {}
   if (sidecars.length) {
-    // Mark first (English if present) as default
-    const eng = sidecars.find(t=> t.lang==='eng'||t.lang==='en');
+    const eng = sidecars.find(t=> /^(eng|en)$/i.test(t.lang));
     if (eng) eng.default = true; else sidecars[0].default = true;
     return res.json({ tracks: sidecars, rev: mediaRev });
   }
-  const embedded = probeAudioStreams(mediaFile).map((t,i)=> ({ ...t, logical: i, kind:'embedded', url: null }));
+  const embedded = probeAudioStreams(mediaFile).map((t,i)=> ({ ...t, logical:i, kind:'embedded', url:null }));
   res.json({ tracks: embedded, rev: mediaRev });
 });
 
-// List available subtitle tracks for current media
-app.get('/media/current-subs.json', (_req,res) => {
+// List available subtitle tracks for current media (JSON for UI)
+app.get('/media/current-subs.json', (_req,res)=>{
   const tracks = enumerateSubtitleTracks(mediaFile);
-  res.json({ tracks });
+  res.json({ tracks, rev: mediaRev });
 });
 
 // (listMedia implementation removed; provided by lib/media-listing.js)
 
-const port = process.env.PORT ? Number(process.env.PORT) : 3000;
-server.listen(port, () => console.log(`listening http://localhost:${port} (ADMIN_KEY=${ADMIN_KEY})`));
-
 // Graceful shutdown summary (Phase 5)
 let shuttingDown = false;
 function shutdownSummary(signal){
-  if (shuttingDown) return; // prevent listener pileup/log spam
-  shuttingDown = true;
+  if (shuttingDown) return; shuttingDown = true;
   try {
     const now = Date.now();
     const uptimeMs = now - processStartTs;
-    const clients=[];
+    const clientsArr = [];
     for (const meta of clientMeta.values()) {
-      clients.push({ id: meta.id, color: meta.color, admin: !!meta.isAdmin, msgsIn: meta.msgsIn||0, msgsOut: meta.msgsOut||0 });
+      clientsArr.push({ id: meta.id, color: meta.color, admin: !!meta.isAdmin, msgsIn: meta.msgsIn||0, msgsOut: meta.msgsOut||0 });
     }
     const mem = process.memoryUsage?.() || {};
     systemLog('perf','shutdown-summary',{
-      signal,
-      uptimeMs,
-      clientCount: clients.length,
-      clients,
-      mediaPath: mediaRel,
-      mediaRev,
-      rss: mem.rss,
-      heapUsed: mem.heapUsed
+      signal, uptimeMs, clientCount: clientsArr.length, clients: clientsArr, mediaPath: mediaRel, mediaRev,
+      rss: mem.rss, heapUsed: mem.heapUsed
     });
-  } catch (e) {
-    systemLog('error','shutdown-summary-fail',{ msg: e?.message });
-  }
-  // Begin graceful close
-  try { clearInterval(presenceInterval); } catch {}
-  try { clearInterval(perfInterval); } catch {}
-  try {
-    for (const c of wss.clients) { try { c.close(1001,'server-shutdown'); } catch {} }
-  } catch {}
-  // Close HTTP server; if lingering sockets block callback > timeout, force exit.
-  let forced = false;
-  setTimeout(()=>{ if(!forced){ forced=true; systemLog('perf','shutdown-forced',{}); process.exit(0); } }, 2500);
-  try { server.close(()=> { if(!forced){ forced=true; process.exit(0); } }); } catch { if(!forced){ forced=true; process.exit(0); } }
+  } catch(e){ systemLog('error','shutdown-summary-fail',{ msg: e?.message }); }
+  try { clearInterval(presenceInterval); } catch{}
+  try { clearInterval(perfInterval); } catch{}
+  try { for (const c of wss.clients) { try { c.close(1001,'server-shutdown'); } catch{} } } catch{}
+  let forced=false;
+  setTimeout(()=>{ if(!forced){ forced=true; systemLog('perf','shutdown-forced',{}); process.exit(0);} }, 2500);
+  try { server.close(()=>{ if(!forced){ forced=true; process.exit(0);} }); } catch { if(!forced){ forced=true; process.exit(0);} }
 }
-['SIGINT','SIGTERM'].forEach(sig=>{
-  try { process.on(sig, () => shutdownSummary(sig)); } catch {}
-});
+['SIGINT','SIGTERM'].forEach(sig=>{ try { process.on(sig, ()=> shutdownSummary(sig)); } catch{} });
+
+const port = process.env.PORT ? Number(process.env.PORT) : 3000;
+server.listen(port, () => console.log(`listening http://localhost:${port} (ADMIN_KEY=${ADMIN_KEY})`));
