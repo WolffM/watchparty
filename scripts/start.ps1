@@ -68,6 +68,22 @@ if (Test-Path $offlineFlag) {
 try { Set-Content -Path $adminKeyFile -Value $env:ADMIN_KEY -NoNewline } catch { if (-not $Quiet) { Write-Host "(Failed to save admin.key: $($_.Exception.Message))" -ForegroundColor DarkRed } }
 if ((Test-Path $adminKeyFile) -and -not $Quiet) { Write-Host "(Saved ADMIN_KEY to $adminKeyFile)" -ForegroundColor DarkGray }
 
+# --- Log cleanup (purge previous run logs) ---
+$logsRoot = Join-Path $stateDir 'logs'
+if (Test-Path $logsRoot) {
+  try {
+    # Delete only files, keep directory structure; remove empty date dirs afterwards
+    Get-ChildItem -Path $logsRoot -Recurse -File -ErrorAction SilentlyContinue | ForEach-Object {
+      Remove-Item -LiteralPath $_.FullName -Force -ErrorAction SilentlyContinue
+    }
+    # Remove empty directories (depth-first)
+    Get-ChildItem -Path $logsRoot -Recurse -Directory | Sort-Object FullName -Descending | ForEach-Object {
+      try { if( -not (Get-ChildItem -Path $_.FullName -Recurse -Force -ErrorAction SilentlyContinue) ) { Remove-Item -LiteralPath $_.FullName -Force -ErrorAction SilentlyContinue } } catch {}
+    }
+    if (-not $Quiet) { Write-Host "Cleared previous log files under $logsRoot" -ForegroundColor DarkGray }
+  } catch { if (-not $Quiet) { Write-Host "(Log cleanup error: $($_.Exception.Message))" -ForegroundColor DarkRed } }
+}
+
 <# Determine port & whether a server is already running #>
 if (-not $env:PORT -or [string]::IsNullOrWhiteSpace($env:PORT)) {
   $free = Get-FreePort -Start $PreferredPort -End ($PreferredPort + 10)

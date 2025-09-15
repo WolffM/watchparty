@@ -7,6 +7,7 @@ import path from 'path';
 const STATE_DIR = process.env.WP_STATE_DIR || path.join(process.cwd(),'state');
 const LOG_DIR = path.join(STATE_DIR,'logs');
 const telemetryLogPath = path.join(LOG_DIR,'telemetry.log');
+const combinedLogPath = path.join(LOG_DIR,'combined.log'); // JSONL aggregator (system+telemetry+client)
 // Compute dated system log filename (system-YYYY-MM-DD[ -N].log) at module load.
 function computeSystemLogPath(){
   const today = new Date().toISOString().slice(0,10); // YYYY-MM-DD
@@ -26,6 +27,8 @@ const systemLogPath = computeSystemLogPath();
 const TELEMETRY_SYNC = process.env.TELEMETRY_SYNC === '1' || process.env.NODE_ENV === 'test';
 const SYSTEM_SYNC = process.env.SYSTEM_LOG_SYNC === '1'; // optional explicit sync for system log
 const SYSTEM_DISABLE_FILE = process.env.SYSTEM_LOG_DISABLE_FILE === '1'; // allow opting out of file writes
+const TELEMETRY_MIRROR_SYSTEM = process.env.TELEMETRY_MIRROR_SYSTEM === '1'; // mirror telemetry into system category for single-file review
+const COMBINED_DISABLE = process.env.COMBINED_LOG_DISABLE === '1'; // allow disabling combined aggregator
 
 function ensureLogsDir(){
   try { if(!fs.existsSync(LOG_DIR)) fs.mkdirSync(LOG_DIR,{recursive:true}); } catch {/* ignore */}
@@ -45,8 +48,22 @@ export const TELEMETRY_EVENTS = Object.freeze({
   RATE_LIMIT_HIT: 'rate-limit-hit',
   CLIENT_ERROR: 'client-error',
   VISIBILITY_CHANGE: 'visibility-change',
-  RECONNECT_ATTEMPT: 'reconnect-attempt'
+  RECONNECT_ATTEMPT: 'reconnect-attempt',
+  AHEAD_GATE_DEFER: 'ahead-gate-defer',
+  AHEAD_GATE_HIT: 'ahead-gate-hit'
+  , CLIENT_WAITING: 'client-waiting'
+  , CLIENT_RESUME: 'client-resume'
 });
+
+function appendCombined(obj){
+  if (COMBINED_DISABLE) return;
+  try {
+    ensureLogsDir();
+    const line = JSON.stringify(obj)+'\n';
+    if (TELEMETRY_SYNC || SYSTEM_SYNC) { try { fs.appendFileSync(combinedLogPath, line); } catch {/* ignore */} }
+    else { fs.appendFile(combinedLogPath, line, ()=>{}); }
+  } catch{/* ignore */}
+}
 
 export function logTelemetry(ev, meta, data){
   try {
@@ -58,19 +75,22 @@ export function logTelemetry(ev, meta, data){
     } else {
       fs.appendFile(telemetryLogPath, line, err=>{ if(err) console.warn('[telemetry] write fail', err.message); });
     }
+    appendCombined({ src:'telemetry', ...entry });
+    if (TELEMETRY_MIRROR_SYSTEM) {
+      systemLog('telemetry', ev, { id: meta?.id, guid: meta?.guid, color: meta?.color, admin: !!meta?.isAdmin, data });
+    }
   } catch (e) {
     console.warn('[telemetry] failure', e?.message);
   }
 }
 
-export function telemetryPath(){ return telemetryLogPath; }
 
 // --- System Log Wrapper (Phase 1 stub) -------------------------------------
 // Persist system log lines to file (single-line) while still emitting to stdout.
 export function systemLog(category, message, fields){
   try {
     let kv='';
-    if (fields && typeof fields === 'object') {
+  if (fields && typeof fields === 'object') {
       const parts=[]; for (const [k,v] of Object.entries(fields)) { if (v === undefined) continue; parts.push(`${k}=${JSON.stringify(v)}`); }
       if (parts.length) kv = ' ' + parts.join(' ');
     }
@@ -93,7 +113,7 @@ export function systemLog(category, message, fields){
         const dailyAll = path.join(dayDir,'all.log');
         if (SYSTEM_SYNC) { try { fs.appendFileSync(dailyAll, appendLine); } catch{} }
         else { fs.appendFile(dailyAll, appendLine, ()=>{}); }
-        const guid = fields && (fields.guid || fields.GUID);
+    const guid = fields && (fields.guid || fields.GUID);
         if (guid) {
           const userFile = path.join(dayDir, `user-${guid}.log`);
           if (SYSTEM_SYNC) { try { fs.appendFileSync(userFile, appendLine); } catch{} }
@@ -101,10 +121,17 @@ export function systemLog(category, message, fields){
         }
       } catch{/* ignore fanout errors */}
     }
+  // Combined JSON aggregator entry
+  appendCombined({ ts: new Date().toISOString(), src:'system', category, message, fields });
   } catch {/* ignore */}
 }
 
-export function systemLogFilePath(){ return systemLogPath; }
+
+// Helper used by server for client-originated structured log events
+export function recordClientLog(meta, cat, message, fields){
+  systemLog('client', cat, { id: meta?.id, guid: meta?.guid, color: meta?.color, msg: message, ...fields });
+  appendCombined({ ts: new Date().toISOString(), src:'client', category: cat, message, id: meta?.id, guid: meta?.guid, color: meta?.color, fields });
+}
 
 // --- WebSocket Send Wrapper Factory ----------------------------------------
 // We generate a wsSend bound to server's clientMeta so logging can evolve centrally later.
@@ -119,4 +146,4 @@ export function makeWsSend(clientMeta){
   };
 }
 
-export default { logTelemetry, systemLog, makeWsSend };
+export default { logTelemetry, systemLog, makeWsSend, recordClientLog };

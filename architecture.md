@@ -252,3 +252,14 @@ cloudflared tunnel --url http://localhost:3000
 - **Playback drift corrector** for sub-100ms sync.
 - **HLS/DASH** for adaptive bitrates.
 - **Access list** (invite codes) for exposed tunnels.
+
+---
+
+## 2025 Fair Delivery Refactor
+
+The live implementation now separates media delivery strategies:
+
+- `lib/fair-delivery.js` (default): queued, token-bucket chunk scheduler with optional head cache and ahead gating. Enabled unless `FAIR_DELIVERY=0`.
+- `lib/direct-delivery.js`: legacy direct byte-range streaming (used only if fairness disabled env-side).
+
+`server.js` always calls the fairness module; when disabled it internally falls back to direct logic, keeping the route code minimal. Per-media revision resets call `resetPerMediaRevision()` and update the active revision with `setMediaRevision()`. Environment drift for FAIR_* vars logs a single `fair-config-drift` system event.

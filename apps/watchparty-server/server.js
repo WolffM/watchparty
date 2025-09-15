@@ -9,7 +9,9 @@ import episodeKeyFromName from './lib/episode.js';
 import { resolveMedia, listMedia } from './lib/media-listing.js';
 import { probeAudioStreams } from './lib/audio-probe.js';
 import { buildSubtitleResponse, enumerateSubtitleTracks } from './lib/subtitles.js';
-import { logTelemetry, makeWsSend, systemLog, TELEMETRY_EVENTS } from './lib/logging.js';
+import { logTelemetry, makeWsSend, systemLog, TELEMETRY_EVENTS, recordClientLog } from './lib/logging.js';
+import { initFairDelivery, serveRange as fairServeRange, getDeliveryDebugInfo, setMediaRevision, resetPerMediaRevision, isFairEnabled, invalidateHeadCachePublic } from './lib/fair-delivery.js';
+import { serveDirectRange } from './lib/direct-delivery.js';
 import { validateAccess } from './lib/auth.js';
 import { renderTemplate } from './lib/templates.js';
 
@@ -19,22 +21,67 @@ const app = express();
 const server = http.createServer(app);
 const wss = new WebSocketServer({ server });
 
+// === Function Discovery Logging (functions.log) ===
+// We record (once) the first invocation of each server function and any client-reported function.
+// Format: <epoch_ms> <seq> <side> <name>
+const FUNCTIONS_LOG_PATH = path.join(process.cwd(),'state','logs','functions.log');
+const _fnLogSeen = new Set();
+let _fnSeq = 1;
+function logFunctionOnce(name, side='server'){
+  if(!name) return;
+  if(_fnLogSeen.has(side+':'+name)) return;
+  _fnLogSeen.add(side+':'+name);
+  try {
+    fs.mkdirSync(path.dirname(FUNCTIONS_LOG_PATH), { recursive: true });
+    fs.appendFileSync(FUNCTIONS_LOG_PATH, `${Date.now()} ${_fnSeq++} ${side} ${name}\n`);
+  } catch {}
+}
+
+// Runtime wrapper: parse this source file for top-level function declarations and wrap them so that
+// the first call emits a functions.log line without modifying each body manually.
+// (Avoids huge diff surface.)
+function _wrapDeclaredFunctions(){
+  try {
+    const src = fs.readFileSync(__filename,'utf8');
+    const names = Array.from(src.matchAll(/^function\s+([A-Za-z0-9_]+)\s*\(/gm)).map(m=>m[1]);
+    const seenLocal = new Set();
+    for(const n of names){
+      if(seenLocal.has(n)) continue; seenLocal.add(n);
+      try {
+        // eslint disabled environment; in ESM we can still reference by name binding
+        const ref = eval(n); // only for instrumentation; guarded
+        if(typeof ref === 'function' && n !== 'logFunctionOnce' && n !== '_wrapDeclaredFunctions') {
+          const wrapped = function(...args){ logFunctionOnce(n,'server'); return ref.apply(this,args); };
+          try { Object.defineProperty(wrapped,'name',{value: ref.name}); } catch{}
+          // Assign back (function declarations create mutable bindings in module scope)
+          eval(n + ' = wrapped');
+        }
+      } catch {}
+    }
+  } catch {}
+}
+_wrapDeclaredFunctions();
+
 // Simple in-memory session state
 let mediaFile = null;      // absolute path to current media (null until admin selects)
 let mediaRel = null;       // relative path under media root (null means no media loaded yet)
 let mediaRev = 0;          // incremented when media changes
 let lastBroadcast = { t: 0, paused: true, ts: Date.now(), rev: mediaRev, path: mediaRel }; // initial home state
-const ADMIN_KEY = process.env.ADMIN_KEY || 'dev';
-// Future multi-room scaffold (Phase 4 placeholder). We keep a single implicit room keyed by ADMIN_KEY.
-// Map shape: roomId -> { mediaFile, mediaRel, mediaRev, lastBroadcast }
-// NOT used yet for isolation; retained so future extension only rewires accessors.
-const rooms = new Map();
-rooms.set(ADMIN_KEY, { get mediaFile(){ return mediaFile; }, get mediaRel(){ return mediaRel; }, get mediaRev(){ return mediaRev; }, get lastBroadcast(){ return lastBroadcast; } });
-
-function getRoomState(roomId){
-  // For now always return global; roomId unused aside from shape compliance.
-  return { mediaFile, mediaRel, mediaRev, lastBroadcast };
+// Active seek gate state (viewer readiness synchronization)
+let activeSeekGate = null; // { gateId, rev, targetT, initiatedTs, pending:Set<guid> }
+let seekGateTimeoutTimer = null; // fail-open timer
+// Admin key resolution order: ENV.ADMIN_KEY > state/admin.key > fallback 'dev'
+let ADMIN_KEY = process.env.ADMIN_KEY;
+if (!ADMIN_KEY) {
+  try {
+    const f = path.join(process.cwd(),'state','admin.key');
+    if (fs.existsSync(f)) {
+      const raw = fs.readFileSync(f,'utf8').trim();
+      if (raw) ADMIN_KEY = raw;
+    }
+  } catch {/* ignore */}
 }
+if (!ADMIN_KEY) ADMIN_KEY = 'dev';
 
 // Chat / Presence data structures (character slots in assignment order)
 // Assignment order with display names including umlaut: Frieren, Himmel, Heiter, Eisen, Fern, Stark, Sein, Übel
@@ -60,6 +107,10 @@ const CHAT_RATE_MAX = config.chat.rateMax; // messages
 const CHAT_RATE_WINDOW_MS = config.chat.rateWindowMs; // time window
 // Global chat burst tracking (simple sliding window of timestamps)
 const globalChatTimes = [];
+
+// Initialize fair delivery (default ON unless FAIR_DELIVERY=0); clears old inlined implementation.
+if (seekGateTimeoutTimer) { try { clearTimeout(seekGateTimeoutTimer); } catch{} seekGateTimeoutTimer=null; }
+initFairDelivery();
 
 function assignColor(){ if(colorsAvailable.length) return colorsAvailable.shift(); return null; }
 function releaseColor(c){ if(!c) return; if(COLOR_PALETTE.includes(c) && !colorsAvailable.includes(c)) { colorsAvailable.push(c); /* maintain original order */ colorsAvailable = COLOR_PALETTE.filter(col => colorsAvailable.includes(col)); } }
@@ -125,9 +176,8 @@ wss.on('connection', (socket, req) => {
   // Defensive: In extremely unlikely future async refactors, re-check single-admin invariant after insertion.
   if (meta.isAdmin) {
     let admins = 0; for (const m of clientMeta.values()) if (m.isAdmin) admins++;
-    if (admins > 1) { systemLog('auth','post-add-second-admin-race',{}); try { socket.close(4003,'admin-already-active'); } catch {} clientMeta.delete(socket); return; }
+  if (admins > 1) { systemLog('auth','post-add-second-admin-race',{ id: meta.id, guid: meta.guid }); try { socket.close(4003,'admin-already-active'); } catch {} clientMeta.delete(socket); return; }
   }
-  systemLog('ws','client-connected',{ id: meta.id, color: meta.color, admin: meta.isAdmin });
   systemLog('ws','client-connected',{ id: meta.id, guid: meta.guid, color: meta.color, admin: meta.isAdmin });
   wsSend(socket, JSON.stringify({ type: 'state', data: lastBroadcast }));
   // Send presence + chat history
@@ -147,6 +197,20 @@ wss.on('connection', (socket, req) => {
     meta.bytesIn = (meta.bytesIn||0) + Buffer.byteLength(raw);
     meta.lastRecvTs = now;
     switch(msg.type){
+      case 'fn-log': { // client reports first-call of a function
+        if (msg.name && typeof msg.name === 'string') { logFunctionOnce(msg.name.trim(),'client'); }
+        break; }
+      case 'client-log': {
+        const cat = typeof msg.cat === 'string' ? msg.cat.slice(0,40) : 'misc';
+        const mtext = typeof msg.msg === 'string' ? msg.msg.slice(0,400) : '';
+        if (mtext) {
+          let fields = undefined;
+            if (msg.fields && typeof msg.fields === 'object') {
+              try { fields = JSON.parse(JSON.stringify(msg.fields)); } catch {}
+            }
+          recordClientLog(meta, cat, mtext, fields);
+        }
+        break; }
       case 'ping':
         // Presence updated above; respond with pong so client can schedule next ping
         try { wsSend(socket, JSON.stringify({ type:'pong', ts: now })); } catch {}
@@ -159,7 +223,6 @@ wss.on('connection', (socket, req) => {
         if (meta.msgTimes.length >= CHAT_RATE_MAX) {
           // Guardrail: log once per second max per user when tripping limit
           if (!meta._lastRateLog || (now - meta._lastRateLog) > 1000) {
-            systemLog('chat','rate-limit-hit',{ id: meta.id, color: meta.color, inWindow: meta.msgTimes.length, max: CHAT_RATE_MAX, windowMs: CHAT_RATE_WINDOW_MS });
             systemLog('chat','rate-limit-hit',{ id: meta.id, guid: meta.guid, color: meta.color, inWindow: meta.msgTimes.length, max: CHAT_RATE_MAX, windowMs: CHAT_RATE_WINDOW_MS });
             meta._lastRateLog = now;
           }
@@ -191,6 +254,18 @@ wss.on('connection', (socket, req) => {
           systemLog('perf','stall-start',{ id: meta.id, guid: meta.guid, ct: dataObj?.ct, rs: dataObj?.rs, ns: dataObj?.ns, buf: dataObj?.buf, drift: dataObj?.drift, rev: mediaRev });
         } else if (ev === 'client-stall-end') {
           systemLog('perf','stall-end',{ id: meta.id, guid: meta.guid, ct: dataObj?.ct, durMs: dataObj?.durMs, lostSec: dataObj?.lostSec, rs: dataObj?.rsEnd, ns: dataObj?.nsEnd, buf: dataObj?.bufEnd, drift: dataObj?.driftEnd, rev: mediaRev });
+        } else if (ev === 'client-waiting') {
+          const now = Date.now();
+          if (!meta._lastWaitingLog || (now - meta._lastWaitingLog) > 900) {
+            meta._lastWaitingLog = now;
+            systemLog('perf','waiting',{ id: meta.id, guid: meta.guid, ct: dataObj?.ct, rs: dataObj?.rs, buf: dataObj?.buf, rev: mediaRev });
+          }
+        } else if (ev === 'client-resume') {
+          const now = Date.now();
+            if (!meta._lastResumeLog || (now - meta._lastResumeLog) > 900) {
+              meta._lastResumeLog = now;
+              systemLog('perf','resume',{ id: meta.id, guid: meta.guid, ct: dataObj?.ct, rs: dataObj?.rs, buf: dataObj?.buf, rev: mediaRev });
+            }
         }
         break; }
       case 'rename': {
@@ -223,30 +298,34 @@ wss.on('connection', (socket, req) => {
       case 'select': // deprecated in UI (was 'load')
       case 'load': {
         const isAdminMsg = (msg.admin === ADMIN_KEY || msg.key === ADMIN_KEY);
-  if (!isAdminMsg) { systemLog('media','deny-load-not-admin',{ id: meta.id }); break; }
-        if (msg.path && typeof msg.path === 'string') {
+  if (!isAdminMsg) { systemLog('media','deny-load-not-admin',{ id: meta.id, guid: meta.guid }); break; }
+    if (msg.path && typeof msg.path === 'string') {
           const resolved = resolveMedia(mediaRoot, msg.path);
           if (resolved) {
             mediaFile = resolved.abs; mediaRel = resolved.rel; mediaRev++;
             // Reset per-revision request tracking
-            fileRequestLogged.clear(); fileReceivedLogged.clear();
+      fileRequestLogged.clear(); fileReceivedLogged.clear();
+      resetPerMediaRevision();
+      setMediaRevision(mediaRev);
             lastBroadcast = { t:0, paused:true, ts: now, rev: mediaRev, path: mediaRel };
             // audio probe cache invalidation no longer needed (handled in helper)
-            systemLog('media','load',{ path: mediaRel, rev: mediaRev });
+            systemLog('media','load',{ path: mediaRel, rev: mediaRev, id: meta.id, guid: meta.guid });
             pushSystemAdmin(`media selected: ${mediaRel}`);
             broadcastState();
           } else {
-            systemLog('media','load-fail-not-found',{ requested: msg.path });
+            systemLog('media','load-fail-not-found',{ requested: msg.path, id: meta.id, guid: meta.guid });
           }
         }
         break; }
       case 'unload': {
         const isAdminMsg = (msg.admin === ADMIN_KEY || msg.key === ADMIN_KEY);
-  if (!isAdminMsg) { systemLog('media','deny-unload-not-admin',{ id: meta.id }); break; }
+  if (!isAdminMsg) { systemLog('media','deny-unload-not-admin',{ id: meta.id, guid: meta.guid }); break; }
         if (mediaFile) {
-          systemLog('media','unload',{ path: mediaRel, rev: mediaRev });
+          systemLog('media','unload',{ path: mediaRel, rev: mediaRev, id: meta.id, guid: meta.guid });
           mediaFile = null; mediaRel = null; mediaRev++;
           fileRequestLogged.clear(); fileReceivedLogged.clear();
+          resetPerMediaRevision();
+          setMediaRevision(mediaRev);
           lastBroadcast = { t:0, paused:true, ts: now, rev: mediaRev, path: mediaRel };
           // audio probe cache invalidation no longer needed (handled in helper)
           pushSystemAdmin('media unloaded (home)');
@@ -281,10 +360,56 @@ wss.on('connection', (socket, req) => {
       case 'seek': {
         if (typeof msg.t === 'number' && msg.t >= 0) {
           const prev = lastBroadcast;
-          // Preserve previous paused state if client didn't explicitly send one (older clients)
           const pausedFlag = (typeof msg.paused === 'boolean') ? msg.paused : prev.paused;
           lastBroadcast = { t: msg.t, paused: pausedFlag, ts: now, rev: mediaRev, path: mediaRel };
           systemLog('media','seek',{ fromT: prev.t, toT: lastBroadcast.t, paused: lastBroadcast.paused, rev: mediaRev });
+          if (meta.isAdmin) {
+            try {
+              // Server-side duplicate seek gate suppression: if an active gate exists very recently with ~same target, ignore creating a new one.
+              if (activeSeekGate && (now - activeSeekGate.initiatedTs) < 1000 && Math.abs(activeSeekGate.targetT - msg.t) < 0.30) {
+                systemLog('media','seek-gate-dup-suppress',{ gateId: activeSeekGate.gateId, targetT: msg.t });
+              } else {
+              const viewers = new Set();
+              for (const [sock, m] of clientMeta.entries()) { if (!m.isAdmin) viewers.add(m.guid); }
+              if (viewers.size) {
+                activeSeekGate = { gateId: Math.random().toString(36).slice(2), rev: mediaRev, targetT: msg.t, initiatedTs: now, pending: viewers };
+                lastBroadcast.paused = true; // force paused while gating
+                broadcastState();
+                // Notify viewers
+                for (const [sock, m] of clientMeta.entries()) { if (m.isAdmin) continue; try { sock.send(JSON.stringify({ type:'seek-gate', gateId: activeSeekGate.gateId, t: activeSeekGate.targetT, rev: mediaRev })); } catch{} }
+                systemLog('media','seek-gate-start',{ gateId: activeSeekGate.gateId, targetT: activeSeekGate.targetT, viewers: viewers.size });
+                // Updated message: threshold now based on short start segment (few seconds) instead of 10% of full duration.
+                pushSystemAdmin('Seek gate active: waiting viewers to buffer start segment');
+                if (seekGateTimeoutTimer) { try { clearTimeout(seekGateTimeoutTimer); } catch{} }
+                seekGateTimeoutTimer = setTimeout(()=>{
+                  if (!activeSeekGate) return;
+                  systemLog('media','seek-gate-timeout',{ gateId: activeSeekGate.gateId, pending: Array.from(activeSeekGate.pending) });
+                  lastBroadcast = { t: activeSeekGate.targetT, paused:false, ts: Date.now(), rev: mediaRev, path: mediaRel };
+                  broadcastState();
+                  activeSeekGate = null;
+                }, 12000);
+              }
+              }
+            } catch{}
+          }
+          broadcastState();
+        }
+        break; }
+      case 'seek-ready': {
+        if (!activeSeekGate) break;
+        if (typeof msg.gateId !== 'string' || msg.gateId !== activeSeekGate.gateId) break;
+        if (activeSeekGate.rev !== mediaRev) { activeSeekGate = null; break; }
+        // Remove guid from pending
+        if (activeSeekGate.pending.has(meta.guid)) {
+          activeSeekGate.pending.delete(meta.guid);
+          systemLog('media','seek-gate-progress',{ gateId: activeSeekGate.gateId, remaining: activeSeekGate.pending.size });
+        }
+        if (!activeSeekGate.pending.size) {
+          // Resume playback at gate target
+          const prev = lastBroadcast;
+          lastBroadcast = { t: activeSeekGate.targetT, paused:false, ts: Date.now(), rev: mediaRev, path: mediaRel };
+          systemLog('media','seek-gate-complete',{ rev: mediaRev, gateId: activeSeekGate.gateId, targetT: activeSeekGate.targetT });
+          activeSeekGate = null;
           broadcastState();
         }
         break; }
@@ -292,21 +417,6 @@ wss.on('connection', (socket, req) => {
         if (typeof msg.t === 'number' && msg.t >= 0) {
           meta.lastPos = { t: msg.t, ts: now };
         }
-        break; }
-      case 'status': {
-        // Rich client self-report (viewer) with current playback metrics
-        if (typeof msg.t === 'number' && msg.t >= 0) {
-          meta.lastPos = { t: msg.t, ts: now };
-        }
-        if (!meta.status) meta.status = {};
-        // Shallow copy only expected primitives to avoid trust of arbitrary objects
-        if (typeof msg.paused === 'boolean') meta.status.paused = msg.paused;
-        if (typeof msg.rev === 'number') meta.status.rev = msg.rev;
-        if (typeof msg.dur === 'number') meta.status.dur = msg.dur;
-        if (typeof msg.rs === 'number') meta.status.rs = msg.rs;
-        if (typeof msg.ns === 'number') meta.status.ns = msg.ns;
-        if (typeof msg.buf === 'number') meta.status.buf = msg.buf; // buffer ahead seconds
-        meta.status._ts = now;
         break; }
       case 'tick': {
         // Deprecated: admin no longer sends periodic ticks (kept for backward compatibility / no-op)
@@ -340,7 +450,6 @@ const presenceInterval = setInterval(()=>{
   for (const [sock, meta] of [...clientMeta.entries()]) {
     const idle = now - meta.lastSeen;
     if (idle > PRESENCE_TIMEOUT_MS) {
-  systemLog('presence','timeout',{ id: meta.id, idleMs: idle });
   systemLog('presence','timeout',{ id: meta.id, guid: meta.guid, idleMs: idle });
       pushSystem((meta.color? meta.color: ('anon'+meta.id)) + ' left');
       releaseColor(meta.color); clientMeta.delete(sock); try { sock.close(4000,'timeout'); } catch {}
@@ -351,7 +460,9 @@ const presenceInterval = setInterval(()=>{
 }, PRESENCE_SWEEP_INTERVAL);
 
 // Periodic performance snapshot (Phase 3 instrumentation)
-const perfInterval = setInterval(()=>{
+const PERF_SNAPSHOT_DISABLE = process.env.PERF_SNAPSHOT_DISABLE === '1';
+const PERF_SNAPSHOT_VERBOSE = process.env.PERF_SNAPSHOT_VERBOSE === '1';
+const perfInterval = !PERF_SNAPSHOT_DISABLE ? setInterval(()=>{
   if (!wss.clients.size) return;
   const now = Date.now();
   const clients=[];
@@ -371,10 +482,15 @@ const perfInterval = setInterval(()=>{
       if (Math.abs(drift) > 10 && !meta._loggedDrift10) { meta._loggedDrift10 = true; systemLog('drift','client-drift-gt10',{ id: meta.id, guid: meta.guid, drift: Number(drift.toFixed(3)), rev: mediaRev }); }
       if (Math.abs(drift) > 30 && !meta._loggedDrift30) { meta._loggedDrift30 = true; systemLog('drift','client-drift-gt30',{ id: meta.id, guid: meta.guid, drift: Number(drift.toFixed(3)), rev: mediaRev }); }
     }
-    clients.push({ id: meta.id, drift, upBps: Number(upBps.toFixed(1)), downBps: Number(downBps.toFixed(1)), msgsIn: meta.msgsIn||0, msgsOut: meta.msgsOut||0 });
+    if (PERF_SNAPSHOT_VERBOSE) {
+      clients.push({ id: meta.id, drift, upBps: Number(upBps.toFixed(1)), downBps: Number(downBps.toFixed(1)), msgsIn: meta.msgsIn||0, msgsOut: meta.msgsOut||0 });
+    }
   }
-  systemLog('perf','snapshot',{ count: clients.length, clients });
-}, 30000);
+  const payload = PERF_SNAPSHOT_VERBOSE ? { count: clients.length, clients } : { count: wss.clients.size };
+  systemLog('perf','snapshot', payload);
+}, 30000) : null;
+
+// (Fairness scheduling & head cache now handled inside lib/fair-delivery.js)
 
 function broadcastState(){
   const payload = JSON.stringify({ type:'state', data: lastBroadcast });
@@ -440,12 +556,12 @@ app.get('/api/debug/clients', (_req,res)=>{
       rDownBps: Number(rDownBps.toFixed(1)),
       lastPos: meta.lastPos||null,
       lastSentTs: meta.lastSentTs||null,
-  lastRecvTs: meta.lastRecvTs||null,
-  status: meta.status ? { ...meta.status } : null
+      lastRecvTs: meta.lastRecvTs||null
     });
   }
   res.json({ count: clients.length, clients, serverNow: now, mediaNow, mediaPaused: !!(lastBroadcast && lastBroadcast.paused), mediaRev, mediaTotalBytes });
 });
+app.get('/api/debug/delivery', (_req,res)=>{ res.json(getDeliveryDebugInfo(mediaFile, clientMeta)); });
 app.get('/api/debug/state', (_req,res)=>{
   res.json({ lastBroadcast, mediaFile: mediaFile? path.relative(process.cwd(), mediaFile): null, rev: mediaRev });
 });
@@ -501,44 +617,17 @@ app.use('/media/sprites', express.static(path.join(ROOT,'media','sprites')));
 app.use('/media/output', express.static(path.join(ROOT,'media','output')));
 
 // Simple range-enabled endpoint
-app.get('/media/current.mp4', (req, res) => {
+// Fairness-enabled media endpoint: legacy direct stream when FAIR_DELIVERY=0, DRR scheduler path when =1.
+app.get('/media/current.mp4', (req,res)=>{
   if (!mediaFile || !fs.existsSync(mediaFile)) { res.status(404).send('No media'); return; }
-  let stat; try { stat = fs.statSync(mediaFile); } catch { res.status(404).end(); return; }
-  const total = stat.size;
-  const range = req.headers.range;
   const guid = (req.query && typeof req.query.guid==='string') ? req.query.guid : null;
   if (guid) {
     const key = guid + '|' + mediaRev;
-    if (!fileRequestLogged.has(key)) {
-      fileRequestLogged.add(key);
-      systemLog('media','file-request',{ guid, rev: mediaRev, range: !!range });
-    }
+    if (!fileRequestLogged.has(key)) { fileRequestLogged.add(key); systemLog('media','file-request',{ guid, rev: mediaRev, range: !!req.headers.range }); }
   }
-  res.setHeader('Accept-Ranges', 'bytes');
-  res.setHeader('Content-Type', mediaFile.toLowerCase().endsWith('.webm') ? 'video/webm' : 'video/mp4');
-  if (!range) {
-    res.setHeader('Content-Length', total);
-    if (req.method === 'HEAD') return res.status(200).end();
-    // Attribute full file streaming to client (first request usually a range; this is fallback)
-    if (guid) {
-      for (const [sock, meta] of clientMeta.entries()) { if (meta.guid === guid) { meta.mediaBytes += total; break; } }
-    }
-    return fs.createReadStream(mediaFile).pipe(res);
-  }
-  const m = /bytes=(\d*)-(\d*)/.exec(range);
-  if (!m) { res.status(416).end(); return; }
-  let start = m[1] ? parseInt(m[1], 10) : 0; let end = m[2] ? parseInt(m[2], 10) : total - 1;
-  if (isNaN(start) || isNaN(end) || start > end || end >= total) { res.status(416).setHeader('Content-Range', `bytes */${total}`).end(); return; }
-  res.status(206);
-  res.setHeader('Content-Range', `bytes ${start}-${end}/${total}`);
-  res.setHeader('Content-Length', end - start + 1);
-  if (req.method === 'HEAD') return res.end();
-  // Attribute served range bytes to requesting client
-  if (guid) {
-    const served = (end - start + 1);
-    for (const [sock, meta] of clientMeta.entries()) { if (meta.guid === guid) { meta.mediaBytes += served; break; } }
-  }
-  fs.createReadStream(mediaFile, { start, end }).pipe(res);
+  const metaLookup = (g)=> { for (const [,m] of clientMeta.entries()) if (m.guid===g) return m; return null; };
+  // Always route through fairness module (default ON). If disabled via env FAIR_DELIVERY=0, module falls back to direct algorithm internally.
+  fairServeRange({ req, res, mediaFile, metaLookup, lastBroadcastFn: ()=> lastBroadcast });
 });
 
 app.get('/healthz', (_req, res) => res.json({ ok: true, file: mediaFile ? path.relative(ROOT, mediaFile) : null }));
@@ -641,5 +730,7 @@ function shutdownSummary(signal){
 }
 ['SIGINT','SIGTERM'].forEach(sig=>{ try { process.on(sig, ()=> shutdownSummary(sig)); } catch{} });
 
+// (Fair delivery env drift detection handled inside module)
+
 const port = process.env.PORT ? Number(process.env.PORT) : 3000;
-server.listen(port, () => console.log(`listening http://localhost:${port} (ADMIN_KEY=${ADMIN_KEY})`));
+server.listen(port, () => systemLog('ws','listening',{ port }));

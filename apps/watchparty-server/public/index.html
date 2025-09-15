@@ -11,6 +11,7 @@
 </head>
 
 <body>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='12' fill='%231d2a33'/%3E%3Cpath d='M24 18v28l24-14-24-14z' fill='%23fff'/%3E%3C/svg%3E" />
   <div id="app">
     <div id="videoWrap">
   <video id="player" preload="metadata" crossorigin="anonymous" playsinline>
@@ -43,6 +44,16 @@
   //  Viewer: /watchparty?key=YOURKEY (root '/' redirects here)
   //  Admin : /watchparty-admin?key=YOURKEY (older /admin path still accepted)
   const params = new URLSearchParams(location.search);
+  // === Client function discovery instrumentation ===
+  // Sends a one-time 'fn-log' message per function name when first invoked.
+  const __fnSeen = new Set();
+  function __logFnOnce(name){
+    if(!name) return; if(__fnSeen.has(name)) return; __fnSeen.add(name);
+    try { if(ws && ws.readyState===1){ ws.send(JSON.stringify({ type:'fn-log', name })); } } catch{}
+  }
+  // Wrapper helper: returns a wrapped version that logs once on first call.
+  function __wrap(name, fn){ if(typeof fn!=='function') return fn; return function wrappedFn(){ __logFnOnce(name); return fn.apply(this, arguments); }; }
+  // Later after definitions we will attempt to wrap selected globals (deferred until window load end).
   let ADMIN_KEY = params.get('key') || params.get('admin');
   let isAdmin = (location.pathname.startsWith('/watchparty-admin') || location.pathname.startsWith('/admin')) && !!ADMIN_KEY;
     const VERBOSE = params.has('verbose');
@@ -118,7 +129,7 @@
       video.classList.remove('wipe-prep');
       void video.offsetWidth; // restart timeline after removing prep
       video.classList.add('wipe-enter');
-  console.log('[transition] wipe-enter start');
+  if (window.DEBUG_UI) console.log('[transition] wipe-enter start');
       wipeInProgress=true;
   setTimeout(()=>{ wipeInProgress=false; video.classList.remove('wipe-enter'); }, (WP_CLIENT_CONFIG?.transitions?.wipeDurationMs||1260) + (WP_CLIENT_CONFIG?.transitions?.wipeCleanupExtraMs||40)); // animation duration + buffer
     }
@@ -130,7 +141,7 @@
       video.style.visibility='visible';
       void video.offsetWidth;
       video.classList.add('wipe-exit');
-  console.log('[transition] wipe-exit start');
+  if (window.DEBUG_UI) console.log('[transition] wipe-exit start');
       wipeInProgress=true;
   setTimeout(()=>{ wipeInProgress=false; video.classList.remove('wipe-exit'); if(cb) cb(); }, (WP_CLIENT_CONFIG?.transitions?.wipeDurationMs||1260) + (WP_CLIENT_CONFIG?.transitions?.wipeCleanupExtraMs||40)); // duration + buffer
     }
@@ -172,7 +183,7 @@
       if (!starAnimId) starAnimId = requestAnimationFrame(stepStars);
       starCanvas.style.display = 'block';
       requestAnimationFrame(() => { starCanvas.style.opacity = '1'; });
-      console.log('[starfield] start');
+  if (window.DEBUG_UI) console.log('[starfield] start');
     }
     function stopStarfield() {
       if (!starfieldActive) return; // already stopped
@@ -180,7 +191,7 @@
       if (starAnimId) { cancelAnimationFrame(starAnimId); starAnimId = null; }
       starCanvas.style.opacity = '0';
   setTimeout(() => { if (!starfieldActive) starCanvas.style.display = 'none'; }, (WP_CLIENT_CONFIG?.starfield?.fadeOutMs)||520);
-      console.log('[starfield] stop');
+  if (window.DEBUG_UI) console.log('[starfield] stop');
     }
     // Start immediately on initial home screen
     startStarfield();
@@ -194,8 +205,7 @@
       homeSelectEl = document.createElement('button');
       homeSelectEl.textContent = 'Select Media';
   homeSelectEl.className = 'home-start-btn';
-      homeSelectEl.onmouseenter = () => homeSelectEl.style.background = '#2463ad';
-      homeSelectEl.onmouseleave = () => homeSelectEl.style.background = '#2e78d2';
+  // Hover styling handled via CSS (.home-start-btn:hover). Removed JS background mutations.
       homeSelectEl.onclick = () => { if (window.openMediaPicker) window.openMediaPicker(); };
       videoWrap.appendChild(homeSelectEl);
     }
@@ -256,7 +266,7 @@
         seekWrap.onmouseleave = () => seekWrap.style.background = '#222';
   seek = document.createElement('input'); seek.type = 'range'; seek.min = '0'; seek.max = '0'; seek.step = '0.01'; seek.value = '0'; seek.style.width = 'clamp(260px,35vw,640px)'; seek.style.cursor = 'pointer';
   // Wrap the range in its own relative container so tooltip alignment isn't skewed by outer padding/time label
-  const seekTrackWrap = document.createElement('div'); seekTrackWrap.style.position='relative'; seekTrackWrap.style.display='inline-block'; seekTrackWrap.style.lineHeight='0';
+  const seekTrackWrap = document.createElement('div'); seekTrackWrap.className='seek-track-wrap';
   seekTrackWrap.appendChild(seek);
   const timeLabel = document.createElement('span'); timeLabel.className = 'range-time'; timeLabel.textContent = '0:00 / 0:00';
   const seekPreview = document.createElement('div'); seekPreview.className = 'seek-tooltip'; seekPreview.textContent = '0:00';
@@ -336,9 +346,7 @@
             inner.innerHTML='';
             inner.appendChild(search);
             // Top-level pills (first segment)
-            const topWrap = document.createElement('div'); topWrap.className='top-pill-row';
-            // Fallback inline style if class not defined in current CSS
-            topWrap.style.display='flex'; topWrap.style.flexWrap='wrap'; topWrap.style.gap='6px'; topWrap.style.margin='6px 0 4px';
+            const topWrap = document.createElement('div'); topWrap.className='media-top-pills';
             const firstSegments = Array.from(new Set(list.map(p=> p.split('/')[0] || ''))).sort();
             function pill(label){
               const b=document.createElement('button'); b.type='button'; b.className='btn-chip'; b.textContent=label||'(root)';
@@ -371,8 +379,7 @@
                 const epName = baseEpisodeName(rel);
                 row.innerHTML = '<span class="flex-grow truncate">' + epName.replace(/</g,'&lt;') + '</span><span class="muted fs-11">' + shortName(rel) + '</span>';
                 highlightCurrent(row, rel);
-                row.onmouseenter = () => { if (!(lastState && lastState.path === rel)) row.style.background = '#25313b'; };
-                row.onmouseleave = () => { if (!(lastState && lastState.path === rel)) row.style.background = '#1a232b'; };
+                // Hover styling now via CSS .picker-row:hover; remove JS handlers
                 row.onclick = () => { if (lastState && lastState.path === rel) { wrap.remove(); return; } send('load', { path: rel }); wrap.remove(); showToast('Loading ' + epName); };
                 row.onkeydown = e => { if(e.key==='Enter'){ row.click(); } };
                 inner.appendChild(row);
@@ -437,12 +444,28 @@
   const styleSelect = document.createElement('select'); styleSelect.className = 'select-chip'; styleSelect.style.display = 'inline-block'; styleSelect.style.maxWidth = '150px';
       STYLE_IDS.forEach(id => { const o = document.createElement('option'); o.value = id; o.textContent = { default: 'Default', outline: 'Outline', yellow: 'Yellow', box: 'Box' }[id]; styleSelect.appendChild(o); });
   styleSelect.value = currentStyle; styleSelect.onchange = () => { const prev = currentStyle; applyStyle(styleSelect.value); telemetry('subs.style.change',{from: prev, to: styleSelect.value}); };
-      const volLabel = document.createElement('span'); volLabel.textContent = 'Vol'; volLabel.style.fontSize = '12px';
+  const volLabel = document.createElement('span'); volLabel.textContent = 'Vol'; volLabel.className='vol-label';
     const vol = document.createElement('input'); vol.type = 'range'; vol.min = '0'; vol.max = '1'; vol.step = '0.01';
   vol.value = (video.volume && video.volume > 0) ? video.volume : 1;
   // Restore unmute-on-volume-change logic so viewer can enable sound after autoplay.
   function updateVolFill(){ const v = Number(vol.value); const pct = v*100; vol.style.setProperty('--pct', pct+'%'); }
-  vol.oninput = () => { const before = video.volume; video.volume = Number(vol.value); if(video.volume>0 && video.muted){ video.muted = false; } telemetry('media.volume.change',{from: before, to: video.volume, muted: video.muted}); updateVolFill(); };
+  let __lastVolTelemTs = 0; let __lastVolValue = video.volume;
+  vol.oninput = () => {
+    const newVal = Number(vol.value);
+    const before = video.volume;
+    // Always set base video volume (so when leaving sidecar it reflects slider)
+    video.volume = newVal;
+    if(sidecarMode){
+      // Keep primary video muted while sidecar active; adjust sidecar volume instead
+      if(sidecarAudioEl){ try { sidecarAudioEl.volume = newVal; } catch{} }
+      if(!video.muted){ video.muted = true; telemetry && telemetry('audio.sidecar.forceMute',{ reason:'vol-change' }); }
+    } else {
+      if(video.volume>0 && video.muted){ video.muted = false; }
+    }
+    const now=Date.now(); const dv=Math.abs(video.volume-__lastVolValue);
+    if(dv>0.02 || (now-__lastVolTelemTs)>80){ telemetry('media.volume.change',{from: before, to: video.volume, muted: video.muted, sidecar: sidecarMode }); __lastVolTelemTs=now; __lastVolValue=video.volume; }
+    updateVolFill();
+  };
   setTimeout(updateVolFill,40);
       volWrap.appendChild(volLabel); volWrap.appendChild(vol);
       // Group CC related controls into a single pill
@@ -456,49 +479,22 @@
       audioBtn.classList.add('btn-media-opt');
       let audioTracksMeta = []; // [{index,lang,title,default}]
       let currentAudioLogical = null; // index within audioTracksMeta array
-      let sidecarMode = false; // true when using external Audio element
-      let sidecarAudioEl = null;
-      let sidecarLang = null;
-      let sidecarLastSync = 0;
-      function ensureSidecarEl(){
-        if (sidecarAudioEl) return sidecarAudioEl;
-        sidecarAudioEl = new Audio();
-        sidecarAudioEl.preload = 'auto';
-        sidecarAudioEl.crossOrigin='anonymous';
-        sidecarAudioEl.style.display='none';
-        document.body.appendChild(sidecarAudioEl);
-        // keep volume in sync with main video
-        sidecarAudioEl.volume = video.volume;
-        video.addEventListener('volumechange', ()=>{ if(sidecarAudioEl) sidecarAudioEl.volume = video.volume; });
-        return sidecarAudioEl;
-      }
-      function detachSidecar(){ if(sidecarAudioEl){ try { sidecarAudioEl.pause(); } catch{} sidecarLang=null; } }
-      function syncSidecar(now){
-        if(!sidecarMode || !sidecarAudioEl || video.paused) return;
-        const dt = Math.abs(sidecarAudioEl.currentTime - video.currentTime);
-        if (dt > 0.2){ sidecarAudioEl.currentTime = video.currentTime; }
-        // rate correction (light drift smoothing)
-        sidecarAudioEl.playbackRate = video.playbackRate;
-        sidecarLastSync = now;
-      }
-      setInterval(()=>{ if(sidecarMode) syncSidecar(Date.now()); }, 750);
+  // Simplified sidecar handling will be defined later after track load
+  let sidecarMode = false; // active selection is sidecar
+  let sidecarAudioEl = null; let sidecarLang = null;
       async function loadAudioTracks(){
-        if (!video.src) { audioTracksMeta=[]; currentAudioLogical=null; updateAudioBtn(); return; }
+        if(!video.src){ audioTracksMeta=[]; currentAudioLogical=null; sidecarMode=false; updateAudioBtn(); return; }
         try {
-          const r = await fetch('/media/current-audio.json?_=' + Date.now());
-          if (!r.ok) return;
-          const j = await r.json();
-          if (j && Array.isArray(j.tracks)) {
-            audioTracksMeta = j.tracks.map((t,i)=>({logical:i, ...t}));
-            sidecarMode = audioTracksMeta.some(t=> t.kind==='sidecar');
-            // Initial default selection preference: Japanese (jpn/ja) first if present, else track flagged default, else first.
-            const jp = audioTracksMeta.find(t=> /^(jpn|ja|japanese)$/.test((t.lang||'').toLowerCase()));
-            const defFlag = audioTracksMeta.find(t=> t.default);
-            const chosen = jp || defFlag || audioTracksMeta[0];
-            currentAudioLogical = chosen ? chosen.logical : null;
-            applyAudioSelection();
-          }
-        } catch {}
+          const r = await fetch('/media/current-audio.json?_=' + Date.now()); if(!r.ok) return;
+          const j = await r.json(); if(!j || !Array.isArray(j.tracks)) return;
+          audioTracksMeta = j.tracks.map((t,i)=>({ logical:i, ...t }));
+          telemetry && telemetry('audio.tracks.list',{ count: audioTracksMeta.length, kinds: Array.from(new Set(audioTracksMeta.map(t=>t.kind))).slice(0,6) });
+          const jp = audioTracksMeta.find(t=> /^(jpn|ja|japanese)$/.test((t.lang||'').toLowerCase()));
+          const defFlag = audioTracksMeta.find(t=> t.default);
+          const chosen = jp || defFlag || audioTracksMeta[0];
+          currentAudioLogical = chosen ? chosen.logical : null;
+          applyAudioSelection();
+        } catch(e){ telemetry && telemetry('audio.tracks.error',{ msg: e && e.message }); }
         updateAudioBtn();
       }
       function friendlyAudioLabel(t){
@@ -519,51 +515,21 @@
   audioBtn.title = 'Audio tracks: ' + audioTracksMeta.map(t=> (t.logical===currentAudioLogical?'*':' ') + friendlyAudioLabel(t) + (t.lang? ' ['+t.lang+']':'') ).join(' | ');
         audioBtn.dataset.active='1'; audioBtn.style.background='#2e78d2'; audioBtn.style.color='#fff';
       }
+      let __prevUserMute = false;
       function applyAudioSelection(){
         const target = audioTracksMeta.find(t=>t.logical===currentAudioLogical);
-        if (!target) return;
-        // Always pause / detach any existing sidecar before switching
-        // (Removed accidental reference to modal wrapper 'wrap' – not needed here)
-        if (sidecarMode && target.kind==='sidecar') {
-          // (Removed accidental reference to 'box' – applyAudioSelection should not manipulate picker UI)
-          video.muted = true;
-          const el = ensureSidecarEl();
-            const needSrc = (!sidecarLang || sidecarLang!==target.lang);
-            if (needSrc){
-              el.pause();
-              el.src = target.url;
-              sidecarLang = target.lang;
-              el.load();
-              // Align currentTime after short delay; do NOT auto-play if video is paused
-              setTimeout(()=>{ try { el.currentTime = video.currentTime; } catch{} }, 250);
-            }
-            // Only start sidecar audio if the main video is currently playing
-            if (!video.paused) { const p2 = el.play(); if(p2&&p2.catch) p2.catch(()=>{}); }
-        } else {
-          // Ensure sidecar is stopped if switching back to embedded
-          if (sidecarAudioEl) { try { sidecarAudioEl.pause(); } catch{} }
-          // Embedded switching attempt (best-effort)
-          try {
-            const list = video.audioTracks;
-            if (list && list.length) {
-              for (let i=0;i<list.length;i++) {
-                const tr = list[i];
-                const lang = (tr.language||'').toLowerCase();
-                tr.enabled = (lang === target.lang);
-              }
-            }
-          } catch {}
-          // Unmute video when using embedded track (unless user explicitly muted earlier)
-          if (!userMuted) video.muted = false;
-        }
+        if(!target){ return; }
+        const wantSidecar = target.kind==='sidecar';
+  sidecarMode = wantSidecar; // set first for enforcement visibility
+  // Defer real enable/disable & element management to central enforcer
+  enforceAudioMode('selection', target);
       }
       audioBtn.onclick = () => {
         if (!audioTracksMeta.length) { loadAudioTracks(); return; }
         if (currentAudioLogical==null) currentAudioLogical=0; else currentAudioLogical = (currentAudioLogical+1) % audioTracksMeta.length;
-        const prev = sidecarMode? ('sidecar:'+sidecarLang): ('embedded:'+currentAudioLogical);
         applyAudioSelection(); updateAudioBtn();
         const curMeta = audioTracksMeta.find(t=>t.logical===currentAudioLogical);
-        telemetry('audio.track.cycle',{from: prev, to: sidecarMode? ('sidecar:'+sidecarLang): ('embedded:'+currentAudioLogical), label: friendlyAudioLabel(curMeta)});
+        telemetry('audio.track.cycle',{ label: friendlyAudioLabel(curMeta), sidecar: !!(curMeta && curMeta.kind==='sidecar'), lang: curMeta && curMeta.lang });
         showToast('Audio: ' + friendlyAudioLabel(curMeta));
       };
       // Expose a global helper to forcibly stop & remove sidecar audio (used on unload transitions for viewers)
@@ -574,19 +540,61 @@
         sidecarAudioEl=null; sidecarLang=null; sidecarMode = false;
       };
       // Maintain sidecar play/pause sync
-  video.addEventListener('play', ()=>{ telemetry('media.play.local'); if(sidecarMode && sidecarAudioEl){ const p=sidecarAudioEl.play(); if(p&&p.catch)p.catch(()=>{}); }});
-  video.addEventListener('pause', ()=>{ telemetry('media.pause.local'); if(sidecarMode && sidecarAudioEl) sidecarAudioEl.pause(); });
-      video.addEventListener('seeking', ()=>{ if(sidecarMode && sidecarAudioEl){ try { sidecarAudioEl.currentTime = video.currentTime; } catch{} } });
-  // Guard against dual playback: if both video (unmuted) and sidecar playing, mute video
-  setInterval(()=>{ if(sidecarMode && sidecarAudioEl && !video.paused){ if(!video.muted && !sidecarAudioEl.paused){ video.muted = true; } } }, 1000);
+  video.addEventListener('play', ()=>{ telemetry('media.play.local'); if(sidecarMode && sidecarAudioEl){ try { const p=sidecarAudioEl.play(); if(p&&p.catch)p.catch(()=>{}); } catch{} } });
+  video.addEventListener('pause', ()=>{ telemetry('media.pause.local'); if(sidecarMode && sidecarAudioEl){ try { sidecarAudioEl.pause(); } catch{} } });
+  video.addEventListener('seeking', ()=>{ if(sidecarMode && sidecarAudioEl){ try { sidecarAudioEl.currentTime = video.currentTime; } catch{} } });
       // Re-probe audio tracks when metadata loads or media changes
-  video.addEventListener('loadedmetadata', () => { telemetry('media.audio.trackscan.start'); setTimeout(()=>{ loadAudioTracks(); telemetry('media.audio.trackscan.done'); }, 100); });
-      const __origApplyState = applyState; // intercept to detect media change
-      applyState = function(s){
-        const oldPath = lastState && lastState.path;
-        __origApplyState(s);
-        if (!s || s.path !== oldPath) { audioTracksMeta=[]; currentAudioLogical=null; updateAudioBtn(); if (s && s.path) setTimeout(loadAudioTracks, 250); }
-      };
+  video.addEventListener('loadedmetadata', () => { telemetry('media.audio.trackscan.start'); setTimeout(()=>{ loadAudioTracks(); telemetry('media.audio.trackscan.done'); enforceAudioMode('metadata-post-scan'); }, 100); });
+  const __origApplyState = applyState; // intercept to detect media change
+  applyState = function(s){
+    const oldPath = lastState && lastState.path;
+    __origApplyState(s);
+    if (!s || s.path !== oldPath) { audioTracksMeta=[]; currentAudioLogical=null; updateAudioBtn(); if (s && s.path) setTimeout(loadAudioTracks, 250); }
+  };
+
+  // Central exclusive audio mode enforcement
+  function enforceAudioMode(reason, targetOverride){
+    try {
+      const target = targetOverride || audioTracksMeta.find(t=>t.logical===currentAudioLogical) || null;
+      let disabled=0, enabled=0;
+      if(sidecarMode){
+        // Create sidecar if missing
+        if(!sidecarAudioEl){
+          sidecarAudioEl = document.createElement('audio'); sidecarAudioEl.preload='auto'; sidecarAudioEl.crossOrigin='anonymous'; sidecarAudioEl.style.display='none'; document.body.appendChild(sidecarAudioEl); sidecarAudioEl.volume = video.volume; video.addEventListener('volumechange', ()=>{ try { if(sidecarAudioEl) sidecarAudioEl.volume = video.volume; } catch{} }); telemetry && telemetry('audio.sidecar.create',{}); }
+        // Load src if mismatch
+        if(target && target.kind==='sidecar'){
+          if(!sidecarLang || sidecarLang!==target.lang){
+            try { sidecarAudioEl.pause(); } catch{}
+            sidecarAudioEl.src = target.url; sidecarLang = target.lang; try { sidecarAudioEl.load(); } catch{}
+            setTimeout(()=>{ try { sidecarAudioEl.currentTime = video.currentTime; } catch{} }, 80);
+            if(telemetry){ if(!window.__lastSidecarActiveKey) window.__lastSidecarActiveKey=null; const key=(typeof lastRev==='number'?lastRev:'_')+':'+sidecarLang; if(window.__lastSidecarActiveKey!==key){ window.__lastSidecarActiveKey=key; telemetry('audio.sidecar.active',{ lang: sidecarLang }); } }
+          }
+        }
+        // Disable all embedded tracks
+        try { const list=video.audioTracks; if(list && list.length){ for(let i=0;i<list.length;i++){ if(list[i].enabled){ list[i].enabled=false; disabled++; } } } } catch{}
+        if(!video.__sidecarActive){ __prevUserMute = video.muted; video.__sidecarActive=true; }
+        if(!video.muted) video.muted=true;
+        if(sidecarAudioEl && !video.paused){ try { const p=sidecarAudioEl.play(); if(p&&p.catch) p.catch(()=>{}); } catch{} }
+      } else {
+        // Embedded mode: enable only chosen track language (if any meta known)
+        try {
+          const list=video.audioTracks; if(list && list.length){
+            let targetLang = target && target.lang ? (target.lang||'').toLowerCase() : null;
+            for(let i=0;i<list.length;i++){
+              const lang=(list[i].language||'').toLowerCase();
+              const should = (!targetLang) ? (i===0) : (lang===targetLang);
+              if(list[i].enabled!==should){ list[i].enabled=should; if(should) enabled++; else disabled++; }
+            }
+          }
+        } catch{}
+        if(video.__sidecarActive){ video.__sidecarActive=false; video.muted = (__prevUserMute || userMuted); } else if(!userMuted) video.muted=false;
+      }
+      telemetry && telemetry('audio.mode.enforce',{ reason, sidecar: sidecarMode, enabled, disabled, targetLang: target && target.lang || null });
+    } catch(e){ telemetry && telemetry('audio.mode.enforce.error',{ reason, msg: e && e.message }); }
+  }
+
+  // Hook additional events to keep consistency
+  video.addEventListener('seeked', ()=>{ enforceAudioMode('seeked'); });
   ccWrap.appendChild(audioBtn);
   ccWrap.appendChild(subBtn); ccWrap.appendChild(ccSelect); ccWrap.appendChild(styleSelect);
   // Append CC group and volume now; fullscreen will be appended at the very end to guarantee rightmost position
@@ -642,24 +650,29 @@
       updateOverlayBtn();
       ctr.appendChild(overlayBtn);
   // Dev status overlay (admin only)
-  let devPanel=null; let devVisible=false; let devTimer=null;
+  let devPanel=null; let devVisible=false; let devTimer=null; let currentDevTab='connections';
   function formatMs(ms){ const s=Math.floor(ms/1000); const m=Math.floor(s/60); const h=Math.floor(m/60); const ss=(s%60).toString().padStart(2,'0'); const mm=(m%60).toString().padStart(2,'0'); if(h) return h+':'+mm+':'+ss; return mm+':'+ss; }
-  function ensureDevPanel(){ if(devPanel) return; devPanel=document.createElement('div'); devPanel.id='devPanel'; devPanel.className='dev-panel'; devPanel.innerHTML='<div class="dev-header">Connections <span id="devRefresh" class="dev-refresh">⟳</span></div><div id="devBody" class="dev-rows"></div>'; videoWrap.appendChild(devPanel); devPanel.querySelector('#devRefresh').onclick=fetchStatus; }
+  function ensureDevPanel(){ if(devPanel) return; devPanel=document.createElement('div'); devPanel.id='devPanel'; devPanel.className='dev-panel'; devPanel.innerHTML='<div class="dev-header"><div class="dev-tabs"><button id="devTabConn" class="dev-tab active">Connections</button><button id="devTabBuff" class="dev-tab">Buffer</button><span id="devBuffAll10" class="dev-buff-all10"></span></div><span id="devRefresh" class="dev-refresh" title="Refresh">⟳</span></div><div id="devBody" class="dev-rows"></div><div id="devBodyBuffer" class="dev-rows" style="display:none"></div>'; videoWrap.appendChild(devPanel); const refresh=()=>{ if(currentDevTab==='connections') fetchConnections(); else fetchDelivery(); }; devPanel.querySelector('#devRefresh').onclick=refresh; const tabConn=devPanel.querySelector('#devTabConn'); const tabBuff=devPanel.querySelector('#devTabBuff'); tabConn.onclick=()=>{ currentDevTab='connections'; tabConn.classList.add('active'); tabBuff.classList.remove('active'); devPanel.querySelector('#devBody').style.display=''; devPanel.querySelector('#devBodyBuffer').style.display='none'; fetchConnections(); }; tabBuff.onclick=()=>{ currentDevTab='buffer'; tabBuff.classList.add('active'); tabConn.classList.remove('active'); devPanel.querySelector('#devBody').style.display='none'; devPanel.querySelector('#devBodyBuffer').style.display=''; fetchDelivery(); }; }
   // Telemetry helpers
   function telemetry(ev, data){ try { if(ws && ws.readyState===1){ ws.send(JSON.stringify({type:'telemetry', ev, data, ts:Date.now()})); } } catch(e){} }
+  function clientLog(cat,msg,fields){ try { if(ws && ws.readyState===1){ ws.send(JSON.stringify({type:'client-log', cat, msg, fields})); } } catch(e){} }
+  // expose globally early
+  try { window.clientLog = clientLog; } catch{}
   // Expose globally for later scripts outside this closure referencing telemetry()
   try { window.telemetry = telemetry; } catch {}
   function telemetricClick(el, evName, extra){ if(!el) return; el.addEventListener('click', (e)=> telemetry(evName, typeof extra==='function'? extra(e): extra)); }
-  async function fetchStatus(){ if(!devVisible) return; try { const r=await fetch('/api/debug/clients?_=' + Date.now()); if(!r.ok) return; const j=await r.json(); const body=devPanel.querySelector('#devBody'); body.innerHTML=''; const serverNow = j.serverNow||Date.now(); const mediaNow = j.mediaNow; const mediaPaused = j.mediaPaused; const mediaTotalBytes = j.mediaTotalBytes||0; const header=document.createElement('div'); header.className='dev-row header'; header.innerHTML='<span class="id-col">ID</span><span class="name-col">User</span><span class="dur-col">Up</span><span class="drift-col">Drift</span><span class="rate-col" title="Avg / Recent down (kB/s)">Down</span><span class="in-col" title="Inbound ws (kB)">In</span><span class="out-col" title="Outbound ws / media / combined (kB)">Out</span><span class="pct-col" title="% file fetched">%</span>'; body.appendChild(header); (j.clients||[]).forEach(c=>{ let driftStr='--'; if(c.drift!=null){ const ageMs = c.driftAgeMs!=null? c.driftAgeMs : (serverNow - (c.lastPos && c.lastPos.ts || serverNow)); const stale = ageMs > 2000; driftStr = (c.drift>0?'+':'') + c.drift.toFixed(2)+'s' + (stale?'~':''); } else if(c.lastPos && mediaNow!=null){ const ageSec=(serverNow-(c.lastPos.ts||serverNow))/1000; const expectedAtSample = mediaPaused? mediaNow : (mediaNow - ageSec); const d=c.lastPos.t-expectedAtSample; driftStr=(d>0?'+':'')+d.toFixed(2)+'s'; } const downKBs = c.downBps!=null? (c.downBps/1024).toFixed(1)+'kB/s':'--'; const rDownKBs = c.rDownBps!=null? (c.rDownBps/1024).toFixed(1)+'kB/s':'--'; const totalInKB = c.bytesIn!=null? (c.bytesIn/1024).toFixed(0):'--'; const wsOutKB = c.bytesOut!=null? (c.bytesOut/1024).toFixed(0):'--'; const mediaKB = c.mediaBytes!=null? (c.mediaBytes/1024).toFixed(0):'--'; const combinedKB = ((c.bytesOut||0)+(c.mediaBytes||0))/1024; const combinedStr = isFinite(combinedKB)? combinedKB.toFixed(0):'--'; const pct = (mediaTotalBytes && c.mediaBytes!=null)? Math.min(100,(c.mediaBytes/mediaTotalBytes)*100).toFixed(1):'--'; const row=document.createElement('div'); row.className='dev-row'; const driftWarn=(driftStr!=='--' && /[-+]?\d/.test(driftStr) && Math.abs(parseFloat(driftStr))>5); row.innerHTML=`<span class="id-col">${c.id}</span><span class="name-col" style="color:${CHAR_COLOR_HEX[c.color]||'#ccc'}" title="${c.color||''}">${c.name||c.color||'anon'}</span><span class="dur-col">${formatMs(c.connectedMs||0)}</span><span class="drift-col ${driftWarn?'drift-warn':''}" title="age ${(c.driftAgeMs||0)}ms">${driftStr}</span><span class="rate-col" title="avg / recent">${downKBs}\n${rDownKBs}</span><span class="in-col">${totalInKB}</span><span class="out-col">${wsOutKB} / ${mediaKB} / ${combinedStr}</span><span class="pct-col">${pct}</span>`; body.appendChild(row); }); } catch(e){ console.warn('dev fetch fail',e); } }
+  async function fetchConnections(){ if(!devVisible || currentDevTab!=='connections') return; try { const r=await fetch('/api/debug/clients?_=' + Date.now()); if(!r.ok) return; const j=await r.json(); const body=devPanel.querySelector('#devBody'); if(!body) return; body.innerHTML=''; const serverNow = j.serverNow||Date.now(); const mediaNow = j.mediaNow; const mediaPaused = j.mediaPaused; const mediaTotalBytes = j.mediaTotalBytes||0; const header=document.createElement('div'); header.className='dev-row header'; header.innerHTML='<span class="id-col">ID</span><span class="name-col">User</span><span class="dur-col">Up</span><span class="drift-col">Drift</span><span class="rate-col" title="Avg / Recent down (kB/s)">Down</span><span class="in-col" title="Inbound ws (kB)">In</span><span class="out-col" title="Outbound ws / media / combined (kB)">Out</span><span class="pct-col" title="% file fetched">%</span>'; body.appendChild(header); (j.clients||[]).forEach(c=>{ let driftStr='--'; if(c.drift!=null){ const ageMs = c.driftAgeMs!=null? c.driftAgeMs : (serverNow - (c.lastPos && c.lastPos.ts || serverNow)); const stale = ageMs > 2000; driftStr = (c.drift>0?'+':'') + c.drift.toFixed(2)+'s' + (stale?'~':''); } else if(c.lastPos && mediaNow!=null){ const ageSec=(serverNow-(c.lastPos.ts||serverNow))/1000; const expectedAtSample = mediaPaused? mediaNow : (mediaNow - ageSec); const d=c.lastPos.t-expectedAtSample; driftStr=(d>0?'+':'')+d.toFixed(2)+'s'; } const downKBs = c.downBps!=null? (c.downBps/1024).toFixed(1)+'kB/s':'--'; const rDownKBs = c.rDownBps!=null? (c.rDownBps/1024).toFixed(1)+'kB/s':'--'; const totalInKB = c.bytesIn!=null? (c.bytesIn/1024).toFixed(0):'--'; const wsOutKB = c.bytesOut!=null? (c.bytesOut/1024).toFixed(0):'--'; const mediaKB = c.mediaBytes!=null? (c.mediaBytes/1024).toFixed(0):'--'; const combinedKB = ((c.bytesOut||0)+(c.mediaBytes||0))/1024; const combinedStr = isFinite(combinedKB)? combinedKB.toFixed(0):'--'; const pct = (mediaTotalBytes && c.mediaBytes!=null)? Math.min(100,(c.mediaBytes/mediaTotalBytes)*100).toFixed(1):'--'; const row=document.createElement('div'); row.className='dev-row'; const driftWarn=(driftStr!=='--' && /[-+]?\d/.test(driftStr) && Math.abs(parseFloat(driftStr))>5); row.innerHTML=`<span class="id-col">${c.id}</span><span class="name-col" style="color:${CHAR_COLOR_HEX[c.color]||'#ccc'}" title="${c.color||''}">${c.name||c.color||'anon'}</span><span class="dur-col">${formatMs(c.connectedMs||0)}</span><span class="drift-col ${driftWarn?'drift-warn':''}" title="age ${(c.driftAgeMs||0)}ms">${driftStr}</span><span class="rate-col" title="avg / recent">${downKBs}\n${rDownKBs}</span><span class="in-col">${totalInKB}</span><span class="out-col">${wsOutKB} / ${mediaKB} / ${combinedStr}</span><span class="pct-col">${pct}</span>`; body.appendChild(row); }); } catch(e){ console.warn('dev fetch fail',e); } }
+  async function fetchDelivery(){ if(!devVisible || currentDevTab!=='buffer') return; try { const r=await fetch('/api/debug/delivery?_=' + Date.now()); if(!r.ok) return; const j=await r.json(); const body=devPanel.querySelector('#devBodyBuffer'); if(!body) return; body.innerHTML=''; const header=document.createElement('div'); header.className='dev-row header'; header.innerHTML='<span class="id-col">ID</span><span class="name-col">GUID</span><span class="dur-col" title="Color">Clr</span><span class="pct-col" title="Bytes fetched">Bytes</span><span class="pct-col" title="Percent">%</span><span class="dur-col" title="Ranges fetched">Rg</span><span class="rate-col" title="Last range bytes">Last</span>'; body.appendChild(header); let all10=true; (j.perClient||[]).forEach(c=>{ const pct = (c.percent!=null)? (Math.min(100,c.percent*100).toFixed(1)+'%'):'--'; if(!(c.percent!=null && c.percent>=0.10)) all10=false; const row=document.createElement('div'); row.className='dev-row'; row.innerHTML=`<span class="id-col">${c.id}</span><span class="name-col" style="font-size:10px;opacity:.8">${c.guid?c.guid.slice(0,8):''}</span><span class="dur-col" style="color:${CHAR_COLOR_HEX[c.color]||'#ccc'}">${c.color||''}</span><span class="pct-col">${c.mediaBytes!=null? (c.mediaBytes/1024).toFixed(0)+'k':''}</span><span class="pct-col">${pct}</span><span class="dur-col">${c.rangeCount||0}</span><span class="rate-col">${c.lastRange? (c.lastRange.bytes|| ( (c.lastRange.end - c.lastRange.start +1) )): ''}</span>`; body.appendChild(row); }); const allEl=devPanel.querySelector('#devBuffAll10'); if(allEl) { allEl.textContent = (j.perClient && j.perClient.length && all10)? 'All >=10% ✓' : ''; allEl.style.color = all10? '#3a3':'#888'; } } catch(e){ console.warn('delivery fetch fail', e); }
+  }
   function toggleDev(){
     if(!isAdmin) return;
     ensureDevPanel();
     devVisible = !devVisible;
     devPanel.style.display = devVisible ? 'block' : 'none';
     if(devVisible){
-      fetchStatus();
+  if(currentDevTab==='connections') fetchConnections(); else fetchDelivery();
       if(devTimer) clearInterval(devTimer);
-  devTimer=setInterval(fetchStatus,1000); // tighten to 1s when panel visible
+  devTimer=setInterval(()=>{ if(currentDevTab==='connections') fetchConnections(); else fetchDelivery(); },1000); // tighten to 1s when panel visible
     } else {
       if(devTimer){ clearInterval(devTimer); devTimer=null; }
     }
@@ -832,10 +845,19 @@
     overlay.textContent = 'sync...';
     document.body.appendChild(overlay);
     let lastRev = null;
+  // Viewer autoplay gating flag: viewers present before media load must wait for explicit play
+  let awaitExplicitPlay = false;
+  // Track whether this viewer observed the home (no media) state before first media selection
+  let sawHomeBeforeFirstMedia = false;
+  // Seek gate client state
+  let pendingSeekGate = null; // { gateId, targetT, sentReady }
+  let lastGateCompleteTs = 0; // seek gate completion timestamp
+  // Host seek gate parity: auto-resume host when gate lifts
+  let pendingHostSeekGate = false;
   // Telemetry (viewer diagnostics)
   const telem = { lastCT: 0, stagnation: 0, playErrors: 0, notAllowed: 0, playSuccess: 0, seekAdjusts: 0, enforcedPauses: 0 };
   function bufferRanges() { const arr = []; try { for (let i=0;i<video.buffered.length;i++){ arr.push([video.buffered.start(i).toFixed(2), video.buffered.end(i).toFixed(2)]); } } catch {} return arr; }
-  function sampleTelemetry(){ if(isAdmin) return; const ct=video.currentTime; const d=ct - telem.lastCT; if(!video.paused && d < 0.05) telem.stagnation++; else telem.stagnation=0; const stalled = (!video.paused && telem.stagnation>=3 && video.readyState>=3); console.log('[telem]', {ct:ct.toFixed(2), d:d.toFixed(2), paused:video.paused, muted:video.muted, rs:video.readyState, ns:video.networkState, buf:bufferRanges(), playOK:telem.playSuccess, playErr:telem.playErrors, notAllowed:telem.notAllowed, seekAdj:telem.seekAdjusts, enforcedPauses:telem.enforcedPauses, stalled}); telem.lastCT=ct; }
+  function sampleTelemetry(){ if(isAdmin) return; const ct=video.currentTime; const d=ct - telem.lastCT; if(!video.paused && d < 0.05) telem.stagnation++; else telem.stagnation=0; const stalled = (!video.paused && telem.stagnation>=3 && video.readyState>=3); if(VERBOSE||window.DEBUG_UI){ console.log('[telem]', {ct:ct.toFixed(2), d:d.toFixed(2), paused:video.paused, muted:video.muted, rs:video.readyState, ns:video.networkState, buf:bufferRanges(), playOK:telem.playSuccess, playErr:telem.playErrors, notAllowed:telem.notAllowed, seekAdj:telem.seekAdjusts, enforcedPauses:telem.enforcedPauses, stalled}); } telem.lastCT=ct; }
   setInterval(sampleTelemetry, (WP_CLIENT_CONFIG?.telemetry?.sampleIntervalMs)||1000);
   // Robust autoplay helper with retry window (guards rare cases play() silently does nothing)
   let autoPlayRetries = 0;
@@ -843,6 +865,7 @@
   function clearAutoPlayTimer(){ if(autoPlayTimer){ clearInterval(autoPlayTimer); autoPlayTimer=null; } }
   function ensureViewerPlaying(){
     if(isAdmin) return;
+    if(awaitExplicitPlay) return; // gated until host plays
     if(!lastState || lastState.paused) { clearAutoPlayTimer(); return; }
     if(!video.src) return;
     if(!video.paused) { clearAutoPlayTimer(); return; }
@@ -850,15 +873,7 @@
     telemetry && telemetry('viewer.autoplay.attempt',{attempt});
     const p = video.play();
     if(p && p.then){ p.then(()=>{ if(!video.paused){ telemetry && telemetry('viewer.autoplay.success',{attempt}); clearAutoPlayTimer(); } }).catch(e=>{ telem.playErrors++; if(e && e.name==='NotAllowedError') telem.notAllowed++; telemetry && telemetry('viewer.autoplay.fail',{attempt, name:e?.name, msg:e?.message}); }); }
-    // Schedule periodic re-attempts (stop when playing or exceeded cap)
-    if(!autoPlayTimer){
-      autoPlayTimer = setInterval(()=>{
-        if(isAdmin || !lastState || lastState.paused){ clearAutoPlayTimer(); return; }
-        if(!video.src || !video.paused){ clearAutoPlayTimer(); return; }
-        if(autoPlayRetries >= 6){ telemetry && telemetry('viewer.autoplay.giveup',{attempts:autoPlayRetries}); clearAutoPlayTimer(); return; }
-        ensureViewerPlaying();
-      }, 1400);
-    }
+    if(!autoPlayTimer){ autoPlayTimer = setInterval(()=>{ if(isAdmin || !lastState || lastState.paused){ clearAutoPlayTimer(); return; } if(!video.src || !video.paused){ clearAutoPlayTimer(); return; } if(autoPlayRetries >= 6){ telemetry && telemetry('viewer.autoplay.giveup',{attempts:autoPlayRetries}); clearAutoPlayTimer(); return; } ensureViewerPlaying(); }, 1400); }
   }
   function applyState(s) {
       if (!s) return; const prev = lastState; lastState = s;
@@ -929,17 +944,27 @@
         // Remove file path spam when not verbose
         overlay.textContent = (isAdmin ? '[HOST] ' : '') + (s.paused ? 'paused' : 'playing') + ` lat=${latencyMs}ms`;
       }
-      if (lastRev === null) { try { updateMediaTitle(s.path); } catch { } }
+  if (lastRev === null) { try { updateMediaTitle(s.path); } catch { } }
+  // Record that viewer saw home screen (used to gate autoplay on first media load)
+  if (!isAdmin && lastState == null && !s.path) { sawHomeBeforeFirstMedia = true; }
   // If admin requested unload (home) ensure any stray sidecar audio halted
   try { if (noMedia && typeof sidecarAudioEl !== 'undefined' && sidecarAudioEl){ sidecarAudioEl.pause(); } } catch{}
   if (s.rev != null && s.rev !== lastRev) {
-        // media changed – reset join staging
+        const prevRev = lastRev;
         lastRev = s.rev; initialSync = true; pendingTarget = null; joinStart = Date.now();
+        if(!isAdmin){
+          const hotJoin = !sawHomeBeforeFirstMedia; // joined after media already selected
+          // Autoplay only if hot join AND media already playing; otherwise wait until admin presses play
+          awaitExplicitPlay = !hotJoin || s.paused;
+          if (awaitExplicitPlay) { try { video.pause(); } catch{} try { video.removeAttribute('autoplay'); } catch{} }
+        }
         try { if (window.resetMediaUi) window.resetMediaUi(); } catch { }
         try { updateMediaTitle(s.path); } catch { }
         if (s.path) {
           // New media selected
           if (isAdmin) { suppress = true; video.currentTime = 0; }
+          // Begin actual media load (previous regression: forgot to call setVideoSrc causing 0:00/0:00)
+          try { setVideoSrc(s.rev); } catch(e){ console.warn('setVideoSrc failed', e); }
           // Viewer mid-join optimization: pre-compute target so we seek immediately after metadata
           if (!isAdmin) {
             try {
@@ -956,41 +981,29 @@
           // Robust load helper with retry for rare initial failure (observed occasional readyState 0 + error in one tab)
           if(!window.__videoLoadAttempts) window.__videoLoadAttempts = 0;
           function setVideoSrc(rev){
+            // Robustly init attempt counter (avoid NaN if clobbered)
+            if(typeof window.__videoLoadAttempts!=='number' || !isFinite(window.__videoLoadAttempts)) window.__videoLoadAttempts = 0;
             window.__videoLoadAttempts++;
-            const attempt = window.__videoLoadAttempts;
+            let attempt = window.__videoLoadAttempts;
+            if(!Number.isFinite(attempt)){ telemetry && telemetry('media.load.badAttempt',{ attemptRaw:String(attempt) }); attempt = 0; window.__videoLoadAttempts = 0; }
             const cacheBust = 'r'+attempt+'='+Date.now();
             const guidParam = (currentSelf && currentSelf.guid) ? ('&guid='+encodeURIComponent(currentSelf.guid)) : '';
             const url = '/media/current.mp4?rev=' + rev + '&' + cacheBust + guidParam;
-            console.log('[media] set src attempt', attempt, url);
+            if (window.DEBUG_UI) console.log('[media] set src attempt', attempt, url);
             telemetry && telemetry('media.load.attempt',{rev:rev, attempt});
             try { video.src = url; video.load(); } catch(e){ console.warn('video load error (immediate)', e); }
+            armLoadWatch(rev, s.path || null);
             scheduleRetry(rev, attempt);
           }
           function scheduleRetry(rev, attempt){
-            // If after delay still HAVE_NOTHING and no further attempt superseded, retry (max 3)
             setTimeout(()=>{
-              if(video.readyState>0) return; // something loaded
-              if(window.__videoLoadAttempts!==attempt) return; // a newer attempt already started
-              if(attempt>=3) { console.warn('[media] giving up after attempts', attempt); telemetry && telemetry('media.load.giveup',{rev, attempts:attempt}); return; }
-              console.warn('[media] retrying initial video load attempt', attempt+1);
+              if(video.readyState>0) return;
+              if(window.__videoLoadAttempts!==attempt) return;
+              if(attempt>=3){ telemetry && telemetry('media.load.giveup',{rev, attempts:attempt}); clientLog('media','load-giveup',{ rev, attempts: attempt }); return; }
               telemetry && telemetry('media.load.retry.timeout',{rev, attemptNext: attempt+1});
               setVideoSrc(rev);
             }, 1800 + (attempt*400));
           }
-          // Attach one-time error handler for early failures (networkState NO_SOURCE)
-          if(!video.__errorRetryBound){
-            video.__errorRetryBound = true;
-            video.addEventListener('error', ()=>{
-              if(video.readyState>0) return; // already loaded something later
-              const attempt = window.__videoLoadAttempts||0;
-              if(attempt>=3) return;
-              console.warn('[media] video error before metadata, scheduling retry', attempt+1, video.error && video.error.code);
-              telemetry && telemetry('media.load.retry.error',{rev: lastRev, attemptNext: attempt+1, code: video.error && video.error.code});
-              setVideoSrc(lastRev);
-            });
-          }
-          setVideoSrc(s.rev);
-          setTimeout(() => suppress = false, 150);
           // Wipe enter only if coming from home
           if (noMediaGlobal) triggerWipeEnter();
           // Attempt to auto-enable subtitles with retries
@@ -1001,7 +1014,27 @@
         return; // wait for metadata before applying more
       }
       // Admin is authoritative: don't force drift corrections or playback state changes.
-      if (isAdmin) return;
+      if (isAdmin) {
+        // Auto-resume after seek gate completes (paused->playing transition following an admin seek)
+        if(pendingHostSeekGate && prev && prev.paused && !s.paused){
+          pendingHostSeekGate = false;
+          try { const p = video.play(); if(p && p.catch) p.catch(()=>{}); } catch{}
+          telemetry && telemetry('seek.gate.host.resume',{ rev: s.rev, ct: Number(video.currentTime.toFixed(2)) });
+          enforceAudioMode('seek-gate-host-resume');
+        }
+        return;
+      }
+      // If gating was active and admin just transitioned to playing for this rev, lift gate
+      if (awaitExplicitPlay && prev && prev.rev === s.rev && prev.paused && !s.paused) { awaitExplicitPlay = false; ensureViewerPlaying(); }
+      if (!isAdmin && pendingSeekGate && !s.paused) {
+        lastGateCompleteTs = Date.now();
+        pendingSeekGate = null;
+        try { if(!video.hasAttribute('autoplay')) video.setAttribute('autoplay',''); } catch{}
+        awaitExplicitPlay = false;
+        ensureViewerPlaying();
+        telemetry('seek.gate.resume',{});
+        enforceAudioMode('seek-gate-viewer-resume');
+      }
       // Stage initial seek until metadata ready (avoid AbortError / spam seeks)
       if (!isAdmin && initialSync) {
         if (video.readyState < 1) { pendingTarget = target; return; }
@@ -1018,7 +1051,7 @@
         if(s.paused){
           if(!video.paused){ suppress=true; video.pause(); setTimeout(()=>suppress=false,30); telem.enforcedPauses++; }
         } else {
-          ensureViewerPlaying();
+          if(!awaitExplicitPlay) ensureViewerPlaying();
         }
       }
     }
@@ -1027,14 +1060,18 @@
       video.addEventListener(ev, () => {
         if(ev==='play' || ev==='playing') telem.playSuccess++;
         if(ev==='error') telem.playErrors++;
-        console.log('[video-event]', ev, 't=', video.currentTime.toFixed(2), 'readyState', video.readyState, 'networkState', video.networkState, 'paused', video.paused, 'muted', video.muted);
+        if(!isAdmin){
+          if(ev==='waiting') { if(!video.paused){ const now=Date.now(); if(!video.__lastWaitingLog || now-video.__lastWaitingLog>900){ video.__lastWaitingLog=now; telemetry('client-waiting',{ ct:Number(video.currentTime.toFixed(2)), rs:video.readyState, buf: bufferRanges() }); } } }
+          if(ev==='playing'){ const now=Date.now(); if(!video.__lastResumeLog || now-video.__lastResumeLog>900){ video.__lastResumeLog=now; telemetry('client-resume',{ ct:Number(video.currentTime.toFixed(2)), rs:video.readyState, buf: bufferRanges() }); } }
+        }
+  if (window.DEBUG_UI) console.log('[video-event]', ev, 't=', video.currentTime.toFixed(2), 'readyState', video.readyState, 'networkState', video.networkState, 'paused', video.paused, 'muted', video.muted);
       });
     });
     // Lightweight stall detector (viewer only) – considers stagnation of currentTime while expected should advance
     let stallActive=false; let stallStartTs=0; let stallStartCT=0; let stallStartDrift=0;
     function currentDrift(){
       if(!lastState) return 0;
-      let target=lastState.t; if(!lastState.paused){ let d=(Date.now()-lastState.ts-latencyMs)/1000; if(d<0)d=0; target+=d; }
+      let target=lastState.t; if(!lastState.paused){ let d=(Date.now()-lastState.ts-latencyMs)/1000; if(d<0)d=0; target += d; }
       return video.currentTime - target;
     }
     setInterval(()=>{
@@ -1046,24 +1083,38 @@
       if(stagnating && !stallActive){
         stallActive=true; stallStartTs=Date.now(); stallStartCT=video.currentTime; stallStartDrift=driftNow;
         telemetry && telemetry('client-stall-start',{ ct:Number(stallStartCT.toFixed(2)), drift:Number(stallStartDrift.toFixed(2)), rs:video.readyState, ns:video.networkState, buf:bufAhead.toFixed(2) });
+    clientLog('perf','stall-start',{ ct:Number(stallStartCT.toFixed(2)), drift:Number(stallStartDrift.toFixed(2)), rs:video.readyState, ns:video.networkState, buf:bufAhead });
       } else if(!stagnating && stallActive){
         const durMs = Date.now()-stallStartTs; const lost = video.currentTime - stallStartCT; const driftEnd=currentDrift();
         telemetry && telemetry('client-stall-end',{ ct:Number(video.currentTime.toFixed(2)), durMs, lostSec:Number(lost.toFixed(2)), driftStart:Number(stallStartDrift.toFixed(2)), driftEnd:Number(driftEnd.toFixed(2)), rsEnd:video.readyState, nsEnd:video.networkState, bufEnd:bufAhead.toFixed(2) });
+    clientLog('perf','stall-end',{ ct:Number(video.currentTime.toFixed(2)), durMs, lostSec:Number(lost.toFixed(2)), driftStart:Number(stallStartDrift.toFixed(2)), driftEnd:Number(driftEnd.toFixed(2)), bufEnd:bufAhead });
         stallActive=false;
       }
     }, 1000);
     video.addEventListener('loadedmetadata', () => {
       if (pendingTarget != null) { suppress = true; video.currentTime = pendingTarget; pendingTarget = null; setTimeout(() => suppress = false, 60); }
-      if (!isAdmin && lastState && !lastState.paused) ensureViewerPlaying();
-  if(!subsEnabled) scheduleAutoSubs((WP_CLIENT_CONFIG?.subtitles?.autoEnableRetriesMetadata)||3);
+      if (!isAdmin && lastState && !lastState.paused && !awaitExplicitPlay) ensureViewerPlaying();
+      if(!subsEnabled) scheduleAutoSubs((WP_CLIENT_CONFIG?.subtitles?.autoEnableRetriesMetadata)||3);
       telemetry('media.loadedmeta.viewer', {t: video.currentTime, dur: video.duration||0});
       try {
         const attempt = window.__videoLoadAttempts||1;
         if(ws && ws.readyState===1){ ws.send(JSON.stringify({ type:'media-loaded', rev: lastRev, attempt })); }
       } catch{}
+      if(video.__loadWatchTimer){ clearTimeout(video.__loadWatchTimer); video.__loadWatchTimer=null; }
     });
     video.addEventListener('play', ()=> telemetry('media.play.auto'));
     video.addEventListener('pause', ()=> telemetry('media.pause.auto'));
+    // Media load failure / timeout instrumentation
+    function armLoadWatch(rev, path){
+      if(video.__loadWatchTimer){ clearTimeout(video.__loadWatchTimer); }
+      video.__loadWatchTimer = setTimeout(()=>{
+        try {
+          const rs = video.readyState; const ns = video.networkState; const haveMeta = rs>=1; const src = video.currentSrc || video.src;
+          telemetry && telemetry('media.load.timeout',{ rev, path, rs, ns, haveMeta, src: (!!src), attempts: window.__videoLoadAttempts||0 });
+          if(!haveMeta){ console.warn('[media] metadata not loaded within timeout', {rev, path, rs, ns}); }
+        } catch{}
+      }, (WP_CLIENT_CONFIG?.media?.loadMetadataTimeoutMs)||5200);
+    }
     // Removed separate collapse/expand buttons; control bar button handles it
     let chatAutoScroll = true;
     function esc(t) { return t.replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "\"": "&quot;", "'": "&#39;" }[c])); }
@@ -1089,7 +1140,7 @@
           if (dot) { dot.outerHTML = `<span class="chat-avatar"><img src="${spriteImg(colorKey)}" alt="${colorKey}"></span>`; }
         }
       });
-      const dt = performance.now()-__t0; if (dt>8) console.log('[perf] applyColorMapToChat', dt.toFixed(2)+'ms');
+  const dt = performance.now()-__t0; if (window.DEBUG_UI && dt>8) console.log('[perf] applyColorMapToChat', dt.toFixed(2)+'ms');
     }
     (async () => {
       try {
@@ -1113,12 +1164,16 @@
       div.dataset.color = msg.color || '';
       const hex = (msg.color && CHAR_COLOR_HEX[msg.color]) || '#9e9e9e';
       const haveHex = !!(msg.color && CHAR_COLOR_HEX[msg.color]);
-      const avatar = (msg.color ? `<span class="${haveHex ? 'chat-avatar' : 'icon'}" style="${haveHex ? '' : 'color:' + hex}">${haveHex ? `<img src="${spriteImg(msg.color)}" alt="${esc(msg.color)}">` : '●'}</span>` : `<span class="icon" style="color:${hex}">●</span>`);
+      const avatar = (msg.color
+        ? (haveHex
+            ? `<span class="chat-avatar"><img src="${spriteImg(msg.color)}" alt="${esc(msg.color)}"></span>`
+            : `<span class="icon" style="color:${hex}">●</span>`)
+        : `<span class="icon" style="color:${hex}">●</span>`);
       div.innerHTML = `<span class="time">${fmtTime(msg.ts)}</span> ${avatar}<span class="name" style="color:${hex}">${esc(msg.name)}</span>: <span class="msg">${esc(msg.text)}</span>`;
       chatMessages.appendChild(div);
       if (chatAutoScroll) chatMessages.scrollTop = chatMessages.scrollHeight;
       if (colorsLoaded && !haveHex) applyColorMapToChat();
-      const dt = performance.now()-t0; if (dt>6) console.log('[perf] appendChat', dt.toFixed(2)+'ms');
+  const dt = performance.now()-t0; if (window.DEBUG_UI && dt>6) console.log('[perf] appendChat', dt.toFixed(2)+'ms');
     }
     // Removed separate admin CC panel – admin now uses unified control bar.
     function appendSystem(msg) {
@@ -1176,7 +1231,7 @@
     updateFloatingVisibility();
     // Chat toggle after initial state
     setTimeout(() => { const btn = document.getElementById('customCtr')?.querySelector('button:last-child'); updateChatToggle(); }, 0);
-  function wsMessage(ev){ try { const msg = JSON.parse(ev.data); if (msg.type === 'state') { log('state', msg.data); applyState(msg.data); } else if (msg.type === 'toast') { if (msg.text === 'Pause requested' && !isAdmin) { /* suppress viewer toast */ } else { showToast(msg.text || ''); } } else if (msg.type === 'pong') { const now = Date.now(); if (lastPingSent) { const rtt = now - lastPingSent; latencyMs = Math.max(0, Math.round(rtt / 2)); log('pong rtt', rtt, 'lat', latencyMs); } } else if (msg.type === 'presence') { setUsers(msg.users); } else if (msg.type === 'chat-history') { msg.items.forEach(it => { if (it.type === 'chat') { appendChat(it); pushFloatingChat(it); } else if (it.type === 'system') appendSystem(it); }); } else if (msg.type === 'chat') { appendChat(msg); pushFloatingChat(msg); } else if (msg.type === 'system') { appendSystem(msg); } else if (msg.type === 'self') { appendSelfNotice(msg.id, msg.name, msg.color); currentSelf = msg; refreshNameButton(); } else if (msg.type === 'rename-result') { console.log('[rename-result]', msg); if (msg.ok) { showToast('Name updated'); } else { if (msg.reason === 'in-use') showToast('Color in use'); else if (msg.reason === 'unchanged') showToast('No change'); else showToast('Rename failed'); } } } catch (e) { log('bad msg', e); } }
+  // (Removed earlier duplicate wsMessage; single definition later.)
 
     // Rename popup UI
     // currentSelf already declared earlier
@@ -1191,7 +1246,7 @@
       const box = document.createElement('div');
   box.className = 'rename-box';
   box.innerHTML = '<h3 class="rename-title">Choose a Character</h3>';
-      const form = document.createElement('form'); form.style.display = 'grid'; form.style.gridTemplateColumns = '1fr 1fr'; form.style.gap = '6px 14px';
+  const form = document.createElement('form'); form.className='rename-form-grid';
   // Name input (will be placed on bottom row with action buttons; create early for logic reuse)
   const nameInput = document.createElement('input');
   nameInput.type = 'text'; nameInput.maxLength = 40; nameInput.placeholder = 'Custom name (optional)';
@@ -1221,9 +1276,9 @@
   const save = document.createElement('button'); save.type = 'submit'; save.textContent = 'Save'; save.className = 'btn btn-primary';
   btnWrap.appendChild(cancel); btnWrap.appendChild(save); actions.appendChild(btnWrap);
   form.appendChild(actions); box.appendChild(form); wrap.appendChild(box); document.body.appendChild(wrap);
-      cancel.onclick = () => { console.log('[rename-popup] cancel'); wrap.remove(); };
-      save.addEventListener('click', () => console.log('[rename-popup] save click (pre-submit)'));
-  form.addEventListener('submit', e => { e.preventDefault(); console.log('[rename-popup] submit'); const fd = new FormData(form); const color = fd.get('color'); const name = nameInput.value.trim(); console.log('[rename-popup] selected', color, 'name', name); if (color && ws.readyState === 1) { console.log('[rename-popup] sending rename'); ws.send(JSON.stringify({ type: 'rename', color, name })); } else { console.log('[rename-popup] not sent (missing color or ws not open)'); } wrap.remove(); });
+  cancel.onclick = () => { if (window.DEBUG_UI) console.log('[rename-popup] cancel'); wrap.remove(); };
+  save.addEventListener('click', () => { if (window.DEBUG_UI) console.log('[rename-popup] save click (pre-submit)'); });
+  form.addEventListener('submit', e => { e.preventDefault(); if (window.DEBUG_UI) console.log('[rename-popup] submit'); const fd = new FormData(form); const color = fd.get('color'); const name = nameInput.value.trim(); if (window.DEBUG_UI) console.log('[rename-popup] selected', color, 'name', name); if (color && ws.readyState === 1) { if (window.DEBUG_UI) console.log('[rename-popup] sending rename'); ws.send(JSON.stringify({ type: 'rename', color, name })); } else { if (window.DEBUG_UI) console.log('[rename-popup] not sent (missing color or ws not open)'); } wrap.remove(); });
     }
     renameBtn.onclick = () => openRename();
   // (duplicate onclose assignment removed – handled in createSocket)
@@ -1240,16 +1295,57 @@
       if (ws.readyState === 1) schedulePing();
   setTimeout(pingLoop, (WP_CLIENT_CONFIG?.network?.pingIntervalMs)||5000);
     }
-  function wsMessage(ev){ try { const msg = JSON.parse(ev.data); if (msg.type === 'state') { log('state', msg.data); applyState(msg.data); } else if (msg.type === 'toast') { if (msg.text === 'Pause requested' && !isAdmin) { /* suppress viewer toast */ } else { showToast(msg.text || ''); } } else if (msg.type === 'pong') { const now = Date.now(); if (lastPingSent) { const rtt = now - lastPingSent; latencyMs = Math.max(0, Math.round(rtt / 2)); log('pong rtt', rtt, 'lat', latencyMs); } } else if (msg.type === 'presence') { setUsers(msg.users); } else if (msg.type === 'chat-history') { msg.items.forEach(it => { if (it.type === 'chat') { appendChat(it); pushFloatingChat(it); } else if (it.type === 'system') appendSystem(it); }); } else if (msg.type === 'chat') { appendChat(msg); pushFloatingChat(msg); } else if (msg.type === 'system') { appendSystem(msg); } else if (msg.type === 'self') { appendSelfNotice(msg.id, msg.name, msg.color); currentSelf = msg; refreshNameButton(); } else if (msg.type === 'rename-result') { console.log('[rename-result]', msg); if (msg.ok) { showToast('Name updated'); } else { if (msg.reason === 'in-use') showToast('Color in use'); else if (msg.reason === 'unchanged') showToast('No change'); else showToast('Rename failed'); } } } catch (e) { log('bad msg', e); } }
+  function wsMessage(ev){
+    try {
+      const msg = JSON.parse(ev.data);
+      if (msg.type === 'state') { log('state', msg.data); applyState(msg.data); }
+      else if (msg.type === 'toast') { if (msg.text === 'Pause requested' && !isAdmin) {} else { showToast(msg.text || ''); } }
+  else if (msg.type === 'pong') { const now = Date.now(); if (lastPingSent) { const rtt = now - lastPingSent; latencyMs = Math.max(0, Math.round(rtt/2)); if(VERBOSE||window.DEBUG_UI) log('pong rtt', rtt, 'lat', latencyMs); } }
+      else if (msg.type === 'presence') { setUsers(msg.users); }
+      else if (msg.type === 'chat-history') { msg.items.forEach(it => { if (it.type === 'chat') { appendChat(it); pushFloatingChat(it); } else if (it.type === 'system') appendSystem(it); }); }
+      else if (msg.type === 'chat') { appendChat(msg); pushFloatingChat(msg); }
+      else if (msg.type === 'system') { appendSystem(msg); }
+      else if (msg.type === 'self') { appendSelfNotice(msg.id, msg.name, msg.color); currentSelf = msg; refreshNameButton(); }
+      else if (msg.type === 'rename-result') { if (!msg.ok) { if (msg.reason === 'in-use') showToast('Color in use'); else if (msg.reason === 'unchanged') showToast('No change'); else showToast('Rename failed'); } else showToast('Name updated'); }
+      else if (msg.type === 'seek-gate') { if(!isAdmin){ pendingSeekGate = { gateId: msg.gateId, targetT: msg.t, sentReady:false }; telemetry('seek.gate.start',{ gateId: msg.gateId, t: msg.t, rev: msg.rev }); try { video.pause(); } catch{} } }
+    } catch(e){ log('bad msg', e); }
+  }
     // Admin-originated events
     // Admin-originated playback events propagate currentTime via payload.t set inside send()
   // Always broadcast play/pause for admin; suppression only applies to seek noise
   video.addEventListener('play', () => { if (isAdmin) { telemetry('media.play.broadcast'); send('play'); } });
   video.addEventListener('pause', () => { if (isAdmin) { telemetry('media.pause.broadcast'); send('pause'); } });
-    let lastSeekSent = 0; video.addEventListener('seeked', () => {
-      if (suppress || !isAdmin) return;
+    // Admin initial play stall instrumentation
+    if(isAdmin){
+      let __firstAdminPlayFired=false; let __playStartWall=0; let __playStartCT=0;
+      video.addEventListener('play', ()=>{
+        if(!__firstAdminPlayFired){
+          __firstAdminPlayFired=true; __playStartWall=performance.now(); __playStartCT=video.currentTime;
+          telemetry && telemetry('admin.play.initial.start',{ ct:Number(__playStartCT.toFixed(2)) });
+        }
+      });
+      video.addEventListener('playing', ()=>{
+        if(__playStartWall){
+          const dur = performance.now()-__playStartWall;
+          telemetry && telemetry('admin.play.initial.stable',{ ms:Math.round(dur), ct:Number(video.currentTime.toFixed(2)) });
+          __playStartWall=0;
+        }
+      });
+    }
+    let lastSeekSent = 0; let lastSeekTarget = null; video.addEventListener('seeked', () => {
+      if (!isAdmin) return;
       const now = Date.now();
-      if (now - lastSeekSent > 150) { send('seek', { paused: video.paused }); lastSeekSent = now; }
+      try { video.pause(); } catch{}
+      const tgt = Number(video.currentTime.toFixed(2));
+      if (lastSeekTarget!=null && (now - lastSeekSent) < 800 && Math.abs(tgt - lastSeekTarget) < 0.25) {
+        telemetry('seek.duplicate.suppressed',{ prevT:lastSeekTarget, newT:tgt, delta:Number((tgt-lastSeekTarget).toFixed(3)) });
+        return;
+      }
+      telemetry('seek.admin.initiate',{ t: tgt });
+      send('seek', { paused: true });
+  // Mark host pending gate until resume broadcast
+  pendingHostSeekGate = true; telemetry && telemetry('seek.gate.host.start',{ t: tgt });
+      lastSeekSent = now; lastSeekTarget = tgt;
     });
     // Removed periodic drift reapply & admin tick (sync only on admin actions & join)
     if(!isAdmin){
@@ -1348,9 +1444,43 @@
   document.addEventListener('keydown', e => { if (!isAdmin && (e.code === 'Space' || e.key === ' ')) { if (document.activeElement === video || document.activeElement === document.body) { e.preventDefault(); if (ws && ws.readyState === 1) { ws.send(JSON.stringify({ type: 'request', action: 'pause' })); showToast('Pause requested'); } } } });
   // Visibility handling: send a ping when returning to foreground to refresh lastSeen and avoid timeout
   document.addEventListener('visibilitychange', ()=>{ if (!document.hidden) { if (ws && ws.readyState===1) { ws.send(JSON.stringify({ type:'ping', vis:true })); } } });
+    // Seek gate readiness polling (viewer only)
+    setInterval(()=>{
+      if(isAdmin) return;
+      if(!pendingSeekGate || pendingSeekGate.sentReady) return;
+      if(!lastState) return;
+      if(!video.duration || video.duration<=0) return;
+      // Only evaluate when paused
+      if(!video.paused) return;
+      const targetT = pendingSeekGate.targetT;
+      // ensure near target
+      if(Math.abs(video.currentTime - targetT) > 1.0) return;
+      let ahead=0;
+      try {
+        for(let i=0;i<video.buffered.length;i++){
+          const s=video.buffered.start(i), e=video.buffered.end(i);
+            if(targetT >= s && targetT <= e){ ahead = e - targetT; break; }
+        }
+      } catch{}
+      const dur = video.duration || 0;
+      const needed = Math.min(Math.max(3, dur*0.02), 12); // min(max(3s,2%),12s)
+      if(ahead >= needed || (dur && targetT > dur - 0.25)){
+        try { if(ws && ws.readyState===1){ ws.send(JSON.stringify({ type:'seek-ready', gateId: pendingSeekGate.gateId })); pendingSeekGate.sentReady = true; telemetry('seek.gate.ready',{ gateId: pendingSeekGate.gateId, ahead: Number(ahead.toFixed(2)), needed: Number(needed.toFixed(2)) }); } } catch{}
+      }
+    }, 700);
     
   // Immediate socket connect (server already enforced access gate)
   createSocket();
+
+  // Defer wrapping after initial script so that referenced functions exist.
+  setTimeout(()=>{
+    try {
+      const toWrap = ['applyState','ensureViewerPlaying','createSocket','wsMessage','send','telemetry','clientLog','showToast','enableDefaultSubs','scheduleAutoSubs','layoutSubs','renderActiveCues','ensureSubTrack','openRename','openMediaPicker','forceHomeCleanup','applyColorMapToChat','appendChat','appendSystem','appendSelfNotice','fetchConnections','fetchDelivery'];
+      for(const n of toWrap){
+        try { if(typeof window[n]==='function' && !window['__wrapped_'+n]){ window[n] = __wrap(n, window[n]); window['__wrapped_'+n]=true; } } catch{}
+      }
+    } catch{}
+  },0);
 
   </script>
 </body>

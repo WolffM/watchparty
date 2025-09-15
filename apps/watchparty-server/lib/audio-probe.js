@@ -1,4 +1,5 @@
 import { spawnSync } from 'child_process';
+import { systemLog } from './logging.js';
 
 // Cached probe results keyed by (rev,file)
 let cachedRev = -1;
@@ -17,7 +18,7 @@ export function probeAudioStreams(file, mediaRev){
       file
     ];
     const res = spawnSync('ffprobe', args, { encoding: 'utf8' });
-    if (res.error) { console.warn('[ffprobe] spawn error', res.error); return []; }
+  if (res.error) { systemLog('error','ffprobe-spawn-fail',{ msg: res.error.message }); return []; }
     const txt = (res.stdout||'').trim();
     if (!txt) return [];
     let j; try { j = JSON.parse(txt); } catch { return []; }
@@ -40,7 +41,7 @@ export function probeAudioStreams(file, mediaRev){
     cachedFile = file;
     return out;
   } catch (e) {
-    console.warn('[ffprobe] error', e); return [];
+    systemLog('error','ffprobe-error',{ msg: e?.message }); return [];
   }
 }
 
