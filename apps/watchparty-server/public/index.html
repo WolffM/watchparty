@@ -255,8 +255,10 @@
   playBtn.classList.add('btn-large');
         function updatePlayBtn() { playBtn.textContent = video.paused ? '▶' : '⏸'; }
         playBtn.onclick = () => {
+          // Prevent play attempts before media source assigned (was causing NotSupportedError after admin reload)
+          if(!video.currentSrc){ telemetry && telemetry('admin.play.nosrc'); if(typeof showToast==='function') showToast('Media not loaded yet'); return; }
           const willPlay = video.paused;
-          if (willPlay) video.play(); else video.pause();
+          if (willPlay) { const p = video.play(); if(p && p.catch) p.catch(()=>{}); } else { video.pause(); }
           // Fallback broadcast: ensure a play/pause message gets out even if event handler missed
           setTimeout(()=>{ if(isAdmin && ws && ws.readyState===1){ const type = video.paused ? 'pause' : 'play'; send(type); } }, 60);
         };
@@ -531,6 +533,16 @@
         const curMeta = audioTracksMeta.find(t=>t.logical===currentAudioLogical);
         telemetry('audio.track.cycle',{ label: friendlyAudioLabel(curMeta), sidecar: !!(curMeta && curMeta.kind==='sidecar'), lang: curMeta && curMeta.lang });
         showToast('Audio: ' + friendlyAudioLabel(curMeta));
+        // Attempt gentle unmute / resume so user doesn't need a manual seek to hear new track
+        setTimeout(()=>{
+          try {
+            const cur = curMeta;
+            if(!sidecarMode){
+              if((typeof userMuted==='undefined' || !userMuted) && video.muted){ video.muted=false; telemetry && telemetry('audio.track.autounmute',{ track: cur && cur.lang || null }); }
+            } else if(sidecarAudioEl && !video.paused){ const p = sidecarAudioEl.play(); if(p && p.catch) p.catch(()=>{}); }
+            if(lastState && !lastState.paused && video.paused){ const p2=video.play(); if(p2 && p2.catch) p2.catch(()=>{}); }
+          } catch{}
+        }, 120);
       };
       // Expose a global helper to forcibly stop & remove sidecar audio (used on unload transitions for viewers)
       window.stopSidecarAudio = function(){
@@ -574,7 +586,15 @@
         try { const list=video.audioTracks; if(list && list.length){ for(let i=0;i<list.length;i++){ if(list[i].enabled){ list[i].enabled=false; disabled++; } } } } catch{}
         if(!video.__sidecarActive){ __prevUserMute = video.muted; video.__sidecarActive=true; }
         if(!video.muted) video.muted=true;
-        if(sidecarAudioEl && !video.paused){ try { const p=sidecarAudioEl.play(); if(p&&p.catch) p.catch(()=>{}); } catch{} }
+        if(sidecarAudioEl && !video.paused){
+          // Defer start for very early hot join until main video truly enters playing state
+          if(initialSync){
+            const starter = ()=>{ try { const p=sidecarAudioEl.play(); if(p&&p.catch) p.catch(()=>{}); } catch{} };
+            video.addEventListener('playing', function __once(){ video.removeEventListener('playing', __once); starter(); }, { once:true });
+          } else {
+            try { const p=sidecarAudioEl.play(); if(p&&p.catch) p.catch(()=>{}); } catch{}
+          }
+        }
       } else {
         // Embedded mode: enable only chosen track language (if any meta known)
         try {
@@ -587,7 +607,9 @@
             }
           }
         } catch{}
-        if(video.__sidecarActive){ video.__sidecarActive=false; video.muted = (__prevUserMute || userMuted); } else if(!userMuted) video.muted=false;
+  if(video.__sidecarActive){ video.__sidecarActive=false; video.muted = (__prevUserMute || userMuted); } else if(!userMuted) video.muted=false;
+  // Remove lingering sidecar element when switching back to embedded to avoid mute confusion
+  if(sidecarAudioEl){ try { sidecarAudioEl.pause(); sidecarAudioEl.remove(); } catch{} sidecarAudioEl=null; sidecarLang=null; telemetry && telemetry('audio.sidecar.remove',{ reason:'mode-exit' }); }
       }
       telemetry && telemetry('audio.mode.enforce',{ reason, sidecar: sidecarMode, enabled, disabled, targetLang: target && target.lang || null });
     } catch(e){ telemetry && telemetry('audio.mode.enforce.error',{ reason, msg: e && e.message }); }
@@ -857,7 +879,14 @@
   // Telemetry (viewer diagnostics)
   const telem = { lastCT: 0, stagnation: 0, playErrors: 0, notAllowed: 0, playSuccess: 0, seekAdjusts: 0, enforcedPauses: 0 };
   function bufferRanges() { const arr = []; try { for (let i=0;i<video.buffered.length;i++){ arr.push([video.buffered.start(i).toFixed(2), video.buffered.end(i).toFixed(2)]); } } catch {} return arr; }
-  function sampleTelemetry(){ if(isAdmin) return; const ct=video.currentTime; const d=ct - telem.lastCT; if(!video.paused && d < 0.05) telem.stagnation++; else telem.stagnation=0; const stalled = (!video.paused && telem.stagnation>=3 && video.readyState>=3); if(VERBOSE||window.DEBUG_UI){ console.log('[telem]', {ct:ct.toFixed(2), d:d.toFixed(2), paused:video.paused, muted:video.muted, rs:video.readyState, ns:video.networkState, buf:bufferRanges(), playOK:telem.playSuccess, playErr:telem.playErrors, notAllowed:telem.notAllowed, seekAdj:telem.seekAdjusts, enforcedPauses:telem.enforcedPauses, stalled}); } telem.lastCT=ct; }
+  function sampleTelemetry(){
+    if(isAdmin) return;
+    const ct=video.currentTime; const d=ct - telem.lastCT;
+    if(!video.paused && d < 0.05) telem.stagnation++; else telem.stagnation=0;
+    const stalled = (!video.paused && telem.stagnation>=3 && video.readyState>=3);
+    if (VERBOSE||window.DEBUG_UI) console.log('[telem]', {ct:ct.toFixed(2), d:d.toFixed(2), paused:video.paused, muted:video.muted, rs:video.readyState, ns:video.networkState, buf:bufferRanges(), playOK:telem.playSuccess, playErr:telem.playErrors, notAllowed:telem.notAllowed, seekAdj:telem.seekAdjusts, enforcedPauses:telem.enforcedPauses, stalled});
+    telem.lastCT=ct;
+  }
   setInterval(sampleTelemetry, (WP_CLIENT_CONFIG?.telemetry?.sampleIntervalMs)||1000);
   // Robust autoplay helper with retry window (guards rare cases play() silently does nothing)
   let autoPlayRetries = 0;
@@ -961,21 +990,31 @@
         try { if (window.resetMediaUi) window.resetMediaUi(); } catch { }
         try { updateMediaTitle(s.path); } catch { }
         if (s.path) {
-          // New media selected
-          if (isAdmin) { suppress = true; video.currentTime = 0; }
+          // New media selected (or admin reload) – admin should align its local currentTime to server baseline
+          if (isAdmin) {
+            try {
+              let adminTarget = s.t;
+              if(!s.paused){ let d=(Date.now()-s.ts - latencyMs)/1000; if(d<0)d=0; adminTarget += d; }
+              if(adminTarget<0) adminTarget=0;
+              suppress=true; video.currentTime=adminTarget; setTimeout(()=>suppress=false,40);
+              telemetry && telemetry('admin.reload.sync',{ rev:s.rev, target:Number(adminTarget.toFixed(2)), paused: !!s.paused });
+            } catch { suppress=true; video.currentTime=0; setTimeout(()=>suppress=false,40); }
+          }
           // Begin actual media load (previous regression: forgot to call setVideoSrc causing 0:00/0:00)
           try { setVideoSrc(s.rev); } catch(e){ console.warn('setVideoSrc failed', e); }
           // Viewer mid-join optimization: pre-compute target so we seek immediately after metadata
           if (!isAdmin) {
             try {
+              // Baseline target derived from authoritative state timestamp (s.ts) and current wall time
+              let nowWall = Date.now();
               let joinTarget = s.t;
               if (!s.paused) {
-                let delta = (Date.now() - s.ts - latencyMs)/1000; if (delta < 0) delta = 0; joinTarget += delta;
+                let delta = (nowWall - s.ts - latencyMs)/1000; if (delta < 0) delta = 0; joinTarget += delta;
               }
               if (joinTarget < 0) joinTarget = 0;
-              // Don't assign currentTime before metadata; stash as pending target
+              // Defer applying until metadata (pendingTarget used later)
               pendingTarget = joinTarget;
-              telemetry && telemetry('join.sync.initial',{ rev: s.rev, target: Number(joinTarget.toFixed(2)), paused: !!s.paused });
+              telemetry && telemetry('join.sync.initial',{ rev: s.rev, target: Number(joinTarget.toFixed(2)), paused: !!s.paused, lat: latencyMs });
             } catch{}
           }
           // Robust load helper with retry for rare initial failure (observed occasional readyState 0 + error in one tab)
@@ -1101,8 +1140,27 @@
         if(ws && ws.readyState===1){ ws.send(JSON.stringify({ type:'media-loaded', rev: lastRev, attempt })); }
       } catch{}
       if(video.__loadWatchTimer){ clearTimeout(video.__loadWatchTimer); video.__loadWatchTimer=null; }
+      // Post-metadata drift refine for hot join (single adjustment window before playback)
+      if(!isAdmin && initialSync){
+        try {
+          if(lastState){
+            let adjusted = lastState.t;
+            if(!lastState.paused){ let d=(Date.now()-lastState.ts-latencyMs)/1000; if(d<0)d=0; adjusted += d; }
+            let diff = video.currentTime - adjusted;
+            if(Math.abs(diff) > 0.4){ suppress=true; video.currentTime = adjusted; setTimeout(()=>suppress=false,60); telemetry && telemetry('join.sync.adjust',{ ct:Number(video.currentTime.toFixed(2)), target:Number(adjusted.toFixed(2)), diff:Number(diff.toFixed(2)) }); }
+          }
+        } catch{}
+      }
     });
-    video.addEventListener('play', ()=> telemetry('media.play.auto'));
+    video.addEventListener('play', ()=> {
+      telemetry('media.play.auto');
+      // If this was a hot join and user isn't muted & not sidecar, attempt delayed unmute (autoplay policies)
+      try {
+        if(!isAdmin && !sidecarMode && video.muted && !userMuted && !video.__delayedUnmuteDone){
+          video.__delayedUnmuteDone=true; setTimeout(()=>{ if(!sidecarMode && video.muted && !userMuted){ video.muted=false; telemetry && telemetry('viewer.autoplay.unmute',{ ct:Number(video.currentTime.toFixed(2)) }); } }, 260);
+        }
+      } catch{}
+    });
     video.addEventListener('pause', ()=> telemetry('media.pause.auto'));
     // Media load failure / timeout instrumentation
     function armLoadWatch(rev, path){
@@ -1482,6 +1540,34 @@
     } catch{}
   },0);
 
+  // --- Hot join final drift & subtitle watchdog (appended) ---
+    if(typeof window.__finalJoinAugmented === 'undefined'){
+      window.__finalJoinAugmented = true;
+      let __finalJoinDone = false;
+      function __computeAuthTarget(){
+        if(!lastState) return video.currentTime;
+        let t = lastState.t; if(!lastState.paused){ let d=(Date.now()-lastState.ts - latencyMs)/1000; if(d<0)d=0; t+=d; }
+        return t<0?0:t;
+      }
+      function __finalDriftCorrection(){
+        if(__finalJoinDone || isAdmin || initialSync || !lastState) return;
+        if(video.readyState < 2) return;
+        const target = __computeAuthTarget();
+        const diff = video.currentTime - target; const abs = Math.abs(diff);
+        const thresh = (WP_CLIENT_CONFIG?.sync?.finalJoinDriftThreshold||0.25);
+        if(abs>thresh){ try { suppress=true; video.currentTime = target; setTimeout(()=>suppress=false,40); telemetry && telemetry('join.sync.final',{ ct:Number(video.currentTime.toFixed(2)), target:Number(target.toFixed(2)), diff:Number(diff.toFixed(2)), rs:video.readyState }); } catch{} }
+        else { telemetry && telemetry('join.sync.final.skip',{ ct:Number(video.currentTime.toFixed(2)), target:Number(target.toFixed(2)), diff:Number(diff.toFixed(2)) }); }
+      }
+      function __verifySubs(){
+        if(isAdmin || __finalJoinDone) return;
+        if(!subsEnabled){ if(!autoSubsAttempted){ scheduleAutoSubs(2); telemetry && telemetry('subs.verify.retryEnable'); } return; }
+        try { if(subTrackEl && subTrackEl.track){ const cues=subTrackEl.track.cues; if((!cues || cues.length===0) && video.currentTime>3){ telemetry && telemetry('subs.verify.noCues',{ lang: currentLang||null }); const base=subTrackEl.src.split('?')[0]; const qp=new URLSearchParams(); qp.set('rev',(lastState?.rev||0)); qp.set('t',Date.now()); qp.set('lang', currentLang||'eng'); subTrackEl.src=base+'?'+qp.toString(); subTrackEl.track.mode='hidden'; setTimeout(()=>{ renderActiveCues(); },160); telemetry && telemetry('subs.verify.reload',{ lang: currentLang||null }); } } } catch{}
+      }
+      function scheduleFinalJoinCheck(){ if(__finalJoinDone || isAdmin) return; setTimeout(()=>{ if(__finalJoinDone) return; __finalDriftCorrection(); __verifySubs(); const target=__computeAuthTarget(); const diff=video.currentTime-target; const subsOk = subsEnabled && subTrackEl && subTrackEl.track && ((subTrackEl.track.cues||{}).length>0 || video.currentTime<5); if(Math.abs(diff) <= (WP_CLIENT_CONFIG?.sync?.finalJoinDriftThreshold||0.25) && subsOk){ __finalJoinDone=true; telemetry && telemetry('join.sync.final.done',{ diff:Number(diff.toFixed(2)), subs:subsOk }); } else { setTimeout(()=>{ if(__finalJoinDone) return; __finalDriftCorrection(); __verifySubs(); const t2=__computeAuthTarget(); const d2=video.currentTime-t2; __finalJoinDone=true; telemetry && telemetry('join.sync.final.done2',{ diff:Number(d2.toFixed(2)), subs:(subsEnabled && subTrackEl && subTrackEl.track)||false }); }, 1200); } },650); }
+      // Attach lightweight listeners instead of editing earlier handlers
+      video.addEventListener('loadedmetadata', ()=>{ if(!isAdmin) scheduleFinalJoinCheck(); });
+      video.addEventListener('play', ()=>{ if(!isAdmin) scheduleFinalJoinCheck(); });
+    }
   </script>
 </body>
 

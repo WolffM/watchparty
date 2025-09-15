@@ -166,19 +166,36 @@ function sendChatHistory(socket){
 wss.on('close', ()=>{}); // noop placeholder (avoid accidental removal if refactoring)
 
 wss.on('connection', (socket, req) => {
+  // Classify connection origin (localhost vs cloudflared vs other) for logging fanout.
+  function classifyOrigin(){
+    try {
+      const hdr = (h)=> req.headers[h] || req.headers[h.toLowerCase()];
+      const cfRay = hdr('cf-ray');
+      const cfConnecting = hdr('cf-connecting-ip');
+      const realIp = hdr('x-forwarded-for');
+      const ra = req.socket && (req.socket.remoteAddress || req.socket.address && req.socket.address().address);
+      // Localhost heuristics: loopback IPv4/IPv6 or direct dev LAN (192.168.x.x) with no CF headers.
+      const isLoop = ra && (ra.startsWith('127.') || ra === '::1' || ra === '::ffff:127.0.0.1');
+      const isLan = ra && /^(::ffff:)?192\.168\./.test(ra);
+      if(cfRay || cfConnecting){ return 'cloudflared'; }
+      if(isLoop || (isLan && !realIp)) { return 'localhost'; }
+      return 'direct';
+    } catch { return 'direct'; }
+  }
+  const originTag = classifyOrigin();
   let supplied=null;
   try { const u=new URL(req.url,'http://ws'); supplied = u.searchParams.get('key') || u.searchParams.get('admin'); } catch {}
   const auth = validateAccess({ suppliedKey: supplied, requestPath: req.url, adminKey: ADMIN_KEY });
   if (!auth.ok){ systemLog('auth','unauthorized-connection',{ path: req.url }); socket.close(1008,'unauthorized'); return; }
   if (auth.isAdmin && hasActiveAdmin()) { systemLog('auth','deny-second-admin',{}); try { socket.close(4003,'admin-already-active'); } catch {} return; }
-  const meta = { id: nextClientId++, guid: genGuid(), color: assignColor(), lastSeen: Date.now(), msgTimes: [], isAdmin: auth.isAdmin, connectAt: Date.now(), lastPos: null, bytesIn:0, bytesOut:0, mediaBytes:0, msgsIn:0, msgsOut:0, lastRecvTs: Date.now(), lastSentTs: Date.now() };
+  const meta = { id: nextClientId++, guid: genGuid(), color: assignColor(), lastSeen: Date.now(), msgTimes: [], isAdmin: auth.isAdmin, connectAt: Date.now(), lastPos: null, bytesIn:0, bytesOut:0, mediaBytes:0, msgsIn:0, msgsOut:0, lastRecvTs: Date.now(), lastSentTs: Date.now(), origin: originTag };
   clientMeta.set(socket, meta);
   // Defensive: In extremely unlikely future async refactors, re-check single-admin invariant after insertion.
   if (meta.isAdmin) {
     let admins = 0; for (const m of clientMeta.values()) if (m.isAdmin) admins++;
   if (admins > 1) { systemLog('auth','post-add-second-admin-race',{ id: meta.id, guid: meta.guid }); try { socket.close(4003,'admin-already-active'); } catch {} clientMeta.delete(socket); return; }
   }
-  systemLog('ws','client-connected',{ id: meta.id, guid: meta.guid, color: meta.color, admin: meta.isAdmin });
+  systemLog('ws','client-connected',{ id: meta.id, guid: meta.guid, color: meta.color, admin: meta.isAdmin, origin: originTag });
   wsSend(socket, JSON.stringify({ type: 'state', data: lastBroadcast }));
   // Send presence + chat history
   sendChatHistory(socket);
@@ -433,12 +450,12 @@ wss.on('connection', (socket, req) => {
   socket.on('close', (code, reasonBuf)=>{
     let reason = '';
     try { if (reasonBuf) reason = reasonBuf.toString(); } catch {}
-  systemLog('ws','client-closed',{ id: meta.id, code, reason });
+  systemLog('ws','client-closed',{ id: meta.id, code, reason, origin: meta.origin });
     const m = clientMeta.get(socket);
   if (m) { pushSystem((m.color? m.color: ('anon'+m.id)) + ' left'); releaseColor(m.color); clientMeta.delete(socket); broadcastPresence(); }
   });
   socket.on('error', err => {
-  systemLog('error','client-error',{ id: meta.id, msg: err?.message });
+  systemLog('error','client-error',{ id: meta.id, msg: err?.message, origin: meta.origin });
   });
 });
 

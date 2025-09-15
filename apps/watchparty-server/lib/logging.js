@@ -24,6 +24,9 @@ function computeSystemLogPath(){
   }
 }
 const systemLogPath = computeSystemLogPath();
+// Maintain lightweight per-origin fanout (localhost/cloudflared/direct) without altering main filename logic.
+// We derive origin from fields.origin when present; only a small set of tags allowed for safety.
+const ORIGIN_TAGS = new Set(['localhost','cloudflared','direct']);
 const TELEMETRY_SYNC = process.env.TELEMETRY_SYNC === '1' || process.env.NODE_ENV === 'test';
 const SYSTEM_SYNC = process.env.SYSTEM_LOG_SYNC === '1'; // optional explicit sync for system log
 const SYSTEM_DISABLE_FILE = process.env.SYSTEM_LOG_DISABLE_FILE === '1'; // allow opting out of file writes
@@ -113,6 +116,13 @@ export function systemLog(category, message, fields){
         const dailyAll = path.join(dayDir,'all.log');
         if (SYSTEM_SYNC) { try { fs.appendFileSync(dailyAll, appendLine); } catch{} }
         else { fs.appendFile(dailyAll, appendLine, ()=>{}); }
+        // Per-origin fanout (if origin present)
+        const originTag = fields && typeof fields.origin === 'string' && ORIGIN_TAGS.has(fields.origin) ? fields.origin : null;
+        if (originTag) {
+          const originFile = path.join(dayDir, `origin-${originTag}.log`);
+          if (SYSTEM_SYNC) { try { fs.appendFileSync(originFile, appendLine); } catch{} }
+          else { fs.appendFile(originFile, appendLine, ()=>{}); }
+        }
     const guid = fields && (fields.guid || fields.GUID);
         if (guid) {
           const userFile = path.join(dayDir, `user-${guid}.log`);
