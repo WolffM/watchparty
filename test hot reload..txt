@@ -1,5 +1,0 @@
-test hot reload.
-try to figure out parallelization.
-try to figure out why certain players stall.
-
-actually do a test on web.
