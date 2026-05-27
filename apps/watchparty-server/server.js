@@ -601,13 +601,15 @@ const offlineFlag = path.join(process.cwd(),'state','offline.flag');
 function isOffline(){ try { return fs.existsSync(offlineFlag); } catch { return false; } }
 // Global offline kill-switch (returns 404 for everything when state/offline.flag exists)
 app.use((req,res,next)=>{ if(isOffline()) { return res.status(404).send('Not Found'); } next(); });
+// Returns 401 JSON on unauthorized. Edge-router (hadoku.me/watchparty/*) is the
+// canonical entry; on tier mismatch the user is redirected to hadoku.me/auth
+// by the centralized authPageResponse helper. This backend should NEVER render
+// its own login page — login UI lives only in hadoku_site/workers/shared/authPage.ts.
 function authGate(req, res, next){
   const supplied = req.query.key || req.query.admin;
   const auth = validateAccess({ suppliedKey: supplied, requestPath: req.path, adminKey: ADMIN_KEY });
   if (auth.ok) return next();
-  const wanted = req.path === '/' ? '/' : req.path;
-  const html = renderTemplate('access-denied.html', { WANTED: wanted });
-  res.status(401).send(html || 'Unauthorized');
+  res.status(401).json({ error: 'unauthorized', hint: 'Sign in at hadoku.me/auth' });
 }
 // Root redirect: send bare domain to /watchparty (no key param). If root has key/admin, preserve it.
 app.get('/', (req,res,next)=>{
