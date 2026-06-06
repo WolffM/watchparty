@@ -1,0 +1,3 @@
+# No package-age gate. pnpm 11 defaults a ~24h minimum-release-age supply-chain
+# delay; we disable it so package updates (incl. @wolffm/* auto-sync) aren't held back.
+minimumReleaseAge: 0
